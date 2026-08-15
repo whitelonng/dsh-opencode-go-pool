@@ -544,6 +544,8 @@ window.__ModuleLoader__.load({
     exports.NS = NS;
     exports.apply = apply;
     exports.inject = inject;
+    // Render-path test hooks (unused by the runtime; see test/client.test.mjs).
+    exports.__test = { KeyCard, UsageBar, badgeFor, fmtReset, usageErrorText, PoolPage };
     return module.exports;
   }
 });

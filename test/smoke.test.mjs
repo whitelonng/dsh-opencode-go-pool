@@ -136,3 +136,42 @@ test('status() reports the pool without network when keys are empty', async (t) 
   assert.deepEqual(status.keys, [])
   await root.fiber.dispose()
 })
+
+test('takeover: dormant while the route is owned elsewhere, auto-registers on adapters-updated', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, OpenCodeGoPool } = harness
+
+  const root = new Context()
+  const llms = makeMockLlms()
+  let blocked = true
+  const recorded = []
+  llms.registerAdapter = (routes, adapter) => {
+    if (blocked) throw new Error('llm: duplicate adapter for provider "opencode-go"')
+    recorded.push([...routes])
+    return { replace: next => { recorded.push([...next]) } }
+  }
+  root.provide('llm', llms)
+  root.provide('settings', makeMockSettings(() => CONFIG))
+  root.provide('credentials', { resolve: async () => undefined })
+
+  await root.plugin(OpenCodeGoPool, {})
+  const plugin = root.get('opencodePool')
+
+  // While pi-ai (or any plugin) owns the route: dormant, surfaced as waiting.
+  assert.equal(plugin.takeoverState(), 'waiting')
+  const waiting = await plugin.status()
+  assert.equal(waiting.takeover, 'waiting')
+  assert.ok(waiting.takeoverHint, 'the refusal reason rides the card hint')
+
+  // The owner releases the route → the registry emits adapters-updated →
+  // the plugin takes over automatically.
+  blocked = false
+  root.emit('llm/adapters-updated')
+  assert.equal(plugin.takeoverState(), 'serving')
+  assert.deepEqual(recorded, [['opencode-go']])
+  const serving = await plugin.status()
+  assert.equal(serving.takeover, 'serving')
+  assert.equal(serving.takeoverHint, null)
+  await root.fiber.dispose()
+})
