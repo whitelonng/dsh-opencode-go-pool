@@ -1,7 +1,23 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Context } from '@deepseek-ai/cordis'
-import { OpenCodeGoPool } from '../index.js'
+
+// Cordis-context smoke tests. They exercise the real plugin against mocked
+// seams, but need the DeepSeek Harness peer dependencies installed. In a
+// checkout that does not have them (e.g. `node --test` on a fresh clone),
+// every test skips instead of failing: the pool/usage unit tests already
+// cover the dependency-free logic.
+
+async function loadHarness(t) {
+  let Context, OpenCodeGoPool
+  try {
+    ;({ Context } = await import('@deepseek-ai/cordis'))
+    ;({ OpenCodeGoPool } = await import('../index.js'))
+  } catch {
+    t.skip('harness peer deps not installed — link the DSH node_modules to run smoke tests')
+    return null
+  }
+  return { Context, OpenCodeGoPool }
+}
 
 function makeMockLlms() {
   return {
@@ -30,18 +46,24 @@ function makeMockSettings(get) {
   }
 }
 
-test('plugin registers the opencode-go route and serves the pi-ai catalog', async () => {
+const CONFIG = {
+  route: 'opencode-go',
+  keys: [],
+  preemptAtPercent: 100,
+  usageBaseUrl: 'https://opencode.ai/zen/go/v1/usage',
+  usageRefreshMs: 30000,
+  timeoutMs: 15000,
+}
+
+test('plugin registers the opencode-go route and serves the pi-ai catalog', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, OpenCodeGoPool } = harness
+
   const root = new Context()
   const llms = makeMockLlms()
   root.provide('llm', llms)
-  root.provide('settings', makeMockSettings(() => ({
-    route: 'opencode-go',
-    keys: [],
-    preemptAtPercent: 100,
-    usageBaseUrl: 'https://opencode.ai/zen/go/v1/usage',
-    usageRefreshMs: 30000,
-    timeoutMs: 15000,
-  })))
+  root.provide('settings', makeMockSettings(() => CONFIG))
   root.provide('credentials', { resolve: async () => undefined })
 
   await root.plugin(OpenCodeGoPool, {})
@@ -69,17 +91,17 @@ test('plugin registers the opencode-go route and serves the pi-ai catalog', asyn
   await root.fiber.dispose()
 })
 
-test('a key without a resolvable credential fails the stream loud (MISSING_CREDENTIAL)', async () => {
+test('a key without a resolvable credential fails the stream loud (MISSING_CREDENTIAL)', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, OpenCodeGoPool } = harness
+
   const root = new Context()
   const llms = makeMockLlms()
   root.provide('llm', llms)
   root.provide('settings', makeMockSettings(() => ({
-    route: 'opencode-go',
+    ...CONFIG,
     keys: [{ id: 'acc-a', label: '主号', apiKeyEnv: 'OPENCODE_GO_KEY_A' }],
-    preemptAtPercent: 100,
-    usageBaseUrl: 'https://opencode.ai/zen/go/v1/usage',
-    usageRefreshMs: 30000,
-    timeoutMs: 15000,
   })))
   root.provide('credentials', { resolve: async () => undefined })
 
@@ -95,22 +117,19 @@ test('a key without a resolvable credential fails the stream loud (MISSING_CREDE
   await root.fiber.dispose()
 })
 
-test('status() reports the pool without network when keys are empty', async () => {
+test('status() reports the pool without network when keys are empty', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, OpenCodeGoPool } = harness
+
   const root = new Context()
   const llms = makeMockLlms()
   root.provide('llm', llms)
-  root.provide('settings', makeMockSettings(() => ({
-    route: 'opencode-go',
-    keys: [],
-    preemptAtPercent: 100,
-    usageBaseUrl: 'https://opencode.ai/zen/go/v1/usage',
-    usageRefreshMs: 30000,
-    timeoutMs: 15000,
-  })))
+  root.provide('settings', makeMockSettings(() => CONFIG))
   root.provide('credentials', { resolve: async () => undefined })
 
   await root.plugin(OpenCodeGoPool, {})
-  const plugin = root.get("opencodePool")
+  const plugin = root.get('opencodePool')
   const status = await plugin.status()
   assert.equal(status.takeover, 'serving')
   assert.equal(status.route, 'opencode-go')
