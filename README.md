@@ -126,3 +126,21 @@ node --test test/*.test.mjs
 ## 许可证
 
 MIT
+
+## 验证记录（无 GUI 真实启动）
+
+除 38 项测试外，插件已在真实 DSH host 中完成无 GUI 启动验证（dsh CLI + 一次性测试 profile）：
+
+```sh
+DSH_HOME=/tmp/dsh-boot-test/home \
+OPENCODE_GO_KEY_A=sk-test-placeholder-aaaa OPENCODE_GO_KEY_B=sk-test-placeholder-bbbb \
+node $DSH_APP/node_modules/@deepseek-ai/dsh/lib/bin.js --profile test "ping"
+```
+
+预期输出（证明 agent 请求真实派发进池适配器并完成轮换）：
+
+```
+dsh: QUOTA: opencode-go-pool: every key is exhausted, disabled, or invalid …
+```
+
+状态文件同时记录：两个 Key 因真实 401（`AuthError: Invalid API key.`）被标记 `invalid`、依次轮换、`lastSwitch.reason: invalid`。真实凭据下额度耗尽（`QUOTA`）走完全相同的轮换机器。
