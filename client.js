@@ -302,7 +302,7 @@ window.__ModuleLoader__.load({
             ? React.createElement('button', {
               style: { ...styles.button, ...(disabled ? styles.buttonDisabled : {}) },
               disabled,
-              onClick: () => onAction('setDisabled', item.id, t('confirmDisable'), false),
+              onClick: () => onAction('setDisabled', item.id, null, false),
             }, t('enable'))
             : React.createElement('button', {
               style: { ...styles.button, ...(disabled ? styles.buttonDisabled : {}) },
