@@ -145,27 +145,28 @@ window.__ModuleLoader__.load({
     // before they cross the wire; this side only needs the descriptor shapes
     // to mount and call.
     const passthrough = () => ({ parse(value) { return value; } });
-    const DESCRIPTOR = (method, parameters, result) => ({
+    // NOTE: every result codec must be strict — the generated client Remote
+    // binder rejects src-json results at mount time ("has no strict codec").
+    const strict = () => ({ mode: 'strict', typeSymbol: 'json', schema: passthrough() });
+    const DESCRIPTOR = (method, parameters) => ({
       id: `dsh-opencode-go-pool#opencodePool/${method}`,
       service: 'opencodePool',
       namespace: 'opencodePool',
       method,
       invocation: { kind: 'direct' },
       parameters: parameters.map(p => ({ name: p, wire: p, source: 'json', codec: { mode: 'strict', typeSymbol: 'json', schema: passthrough() } })),
-      result,
+      result: strict(),
     });
-    const strict = () => ({ mode: 'strict', typeSymbol: 'json', schema: passthrough() });
-    const srcJson = () => ({ mode: 'src-json' });
 
     const TYPERT_REMOTE = {
       package: 'dsh-opencode-go-pool',
       descriptors: [
-        DESCRIPTOR('status', [], strict()),
-        DESCRIPTOR('setActive', ['id'], srcJson()),
-        DESCRIPTOR('setDisabled', ['id', 'on'], srcJson()),
-        DESCRIPTOR('clearInvalid', ['id'], srcJson()),
-        DESCRIPTOR('putKeys', ['keys'], srcJson()),
-        DESCRIPTOR('takeOverState', [], srcJson()),
+        DESCRIPTOR('status', []),
+        DESCRIPTOR('setActive', ['id']),
+        DESCRIPTOR('setDisabled', ['id', 'on']),
+        DESCRIPTOR('clearInvalid', ['id']),
+        DESCRIPTOR('putKeys', ['keys']),
+        DESCRIPTOR('takeOverState', []),
       ],
     };
 
@@ -242,6 +243,21 @@ window.__ModuleLoader__.load({
       if (percent >= 100) return 'var(--dsw-alias-state-error-primary)';
       if (percent >= 90) return '#d97706';
       return 'var(--dsw-alias-state-business-primary)';
+    }
+
+    // Original "GO" mark: a G arc-with-bar plus an O ring, drawn in the same
+    // 1.5px outline stroke language as the settings icon set (currentColor).
+    function GoMark(props) {
+      const { size } = props;
+      return React.createElement('svg', {
+        width: size, height: size, viewBox: '0 0 34 16', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round',
+        'aria-hidden': 'true', style: { display: 'block' },
+      },
+        React.createElement('path', { d: 'M 7 2.75 A 5.25 5.25 0 1 1 9.625 3.453' }),
+        React.createElement('path', { d: 'M 12.25 8 H 9.5' }),
+        React.createElement('circle', { cx: 27, cy: 8, r: 5.25 }),
+      );
     }
 
     function UsageBar(props) {
@@ -460,8 +476,15 @@ window.__ModuleLoader__.load({
       const keys = data ? data.keys : [];
 
       return React.createElement('div', { style: styles.wrap },
-        React.createElement('h2', { style: styles.title }, t('title')),
-        React.createElement('p', { style: styles.subtitle }, t('subtitle')),
+        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+          React.createElement('div', { style: { color: 'var(--dsw-alias-state-business-primary)' } },
+            React.createElement(GoMark, { size: 24 }),
+          ),
+          React.createElement('div', null,
+            React.createElement('h2', { style: styles.title }, t('title')),
+            React.createElement('p', { style: styles.subtitle }, t('subtitle')),
+          ),
+        ),
         data === null && !error
           ? React.createElement('p', { style: styles.hint }, t('loading'))
           : null,
@@ -545,7 +568,7 @@ window.__ModuleLoader__.load({
     exports.apply = apply;
     exports.inject = inject;
     // Render-path test hooks (unused by the runtime; see test/client.test.mjs).
-    exports.__test = { KeyCard, UsageBar, badgeFor, fmtReset, usageErrorText, PoolPage };
+    exports.__test = { KeyCard, UsageBar, badgeFor, fmtReset, usageErrorText, PoolPage, GoMark, TYPERT_REMOTE };
     return module.exports;
   }
 });

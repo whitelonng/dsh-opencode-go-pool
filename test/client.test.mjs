@@ -176,3 +176,20 @@ test('the bundle exposes no literal secrets anywhere', async () => {
   const source = readFileSync(join(here, '..', 'client.js'), 'utf8')
   assert.ok(!/sk-opencode-[A-Za-z0-9]+/.test(source), 'no literal OpenCode keys in the bundle')
 })
+
+test('every Remote descriptor carries strict codecs (client binder requirement)', async (t) => {
+  const harness = await loadReact(t)
+  if (!harness) return
+  const spec = await loadClientBundle(t)
+  const module = spec.factory(name => (name === 'react' ? harness.React : (() => { throw new Error(name) })()))
+  const { TYPERT_REMOTE } = module.__test
+  assert.equal(TYPERT_REMOTE.package, 'dsh-opencode-go-pool')
+  assert.ok(TYPERT_REMOTE.descriptors.length >= 6)
+  for (const descriptor of TYPERT_REMOTE.descriptors) {
+    assert.equal(descriptor.result.mode, 'strict', `${descriptor.method} result must be strict`)
+    assert.equal(typeof descriptor.result.schema.parse, 'function')
+    for (const parameter of descriptor.parameters) {
+      assert.equal(parameter.codec.mode, 'strict', `${descriptor.method} parameter ${parameter.name} must be strict`)
+    }
+  }
+})
