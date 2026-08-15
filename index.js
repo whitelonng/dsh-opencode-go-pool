@@ -162,28 +162,40 @@ class OpenCodeGoPoolAdapter extends LlmAdapter {
       }
       const inner = this.plugin.makeAttemptAdapter(entry)
       let emitted = false
+      let silentRetry = false
+      let finish = null
       try {
         for await (const chunk of inner.stream(options)) {
           if (chunk.type === 'finish') {
             if (chunk.reason.kind === 'error' && isRotationFailure(chunk.reason.failure)) {
               pool.onFailure(entry.id, chunk.reason.failure)
-              if (!emitted) continue // silent failover: retry with the next key
+              // Silent failover only before any content: retry with the next
+              // key. `continue` here must restart the OUTER attempt loop, so
+              // it breaks the inner for-await first.
+              silentRetry = !emitted
             }
-            yield chunk
-            return
+            finish = chunk
+            break
           }
           if (isContentChunk(chunk)) emitted = true
           yield chunk
         }
-        return
       } catch (error) {
         const failure = failureOf(error)
         if (failure && isRotationFailure(failure) && !emitted) {
           pool.onFailure(entry.id, failure)
-          continue
+          silentRetry = true
+        } else {
+          throw error
         }
-        throw error
       }
+      if (silentRetry) continue
+      if (finish !== null) {
+        yield finish
+        return
+      }
+      // Degenerate inner adapter that ended without a terminal finish.
+      return
     }
   }
 }
