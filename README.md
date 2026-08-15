@@ -111,7 +111,7 @@ Authorization: Bearer <OpenCode Go API Key>
 
 - Host 半：`index.js`（插件 + 池适配器 + 接管）、`pool.js`（状态机）、`usage.js`（用量网关）、`typert.host.js`（RPC 清单）
 - 浏览器半：`client.js`（lazy-CJS bundle，`window.__ModuleLoader__.load` 格式）
-- 测试：`node --test test/*.test.mjs`（33 项：状态机 13、用量网关 7、cordis 烟测 8（含接管协议与静默切换端到端）、客户端 bundle 执行与渲染 5；缺少 harness 依赖时相关测试优雅跳过）
+- 测试：`node --test test/*.test.mjs`（38 项：状态机 13、用量网关 7、cordis 烟测 8（接管协议与静默切换端到端）、真实服务集成 5（LlmRuntime 注册表/llm.stream 全链路/settings 写入/接管握手）、客户端 bundle 执行与渲染 5；缺少 harness 依赖时相关测试优雅跳过）
 
 ```sh
 node --test test/*.test.mjs

@@ -397,7 +397,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
 
   async putKeys(keys) {
     assertKeyList(keys)
-    await this.scope.mutate({ keys })
+    await this.scope.update({ keys })
     return true
   }
 

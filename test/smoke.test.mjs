@@ -51,7 +51,7 @@ function makeMockSettings(get) {
   const scope = {
     get,
     watch: () => () => {},
-    mutate: async () => {},
+    update: async () => {},
     replace: async () => {},
   }
   return {
