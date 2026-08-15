@@ -49,7 +49,7 @@ async function loadClientBundle(t) {
 test('bundle executes and apply() registers the settings section', async (t) => {
   const harness = await loadReact(t)
   if (!harness) return
-  const { React } = harness
+  const { React, renderToString } = harness
   const spec = await loadClientBundle(t)
 
   const module = spec.factory(name => {
@@ -77,7 +77,10 @@ test('bundle executes and apply() registers the settings section', async (t) => 
   assert.equal(registration.id, 'opencode-go-pool')
   assert.equal(registration.order, 41)
   assert.equal(typeof registration.component, 'function')
-  assert.equal(typeof registration.label(), 'string')
+  // The nav label is a React element: sparkle mark + localized text.
+  const labelHtml = renderToString(React.createElement(React.Fragment, null, registration.label()))
+  assert.ok(labelHtml.includes('dsh-ogp-nav-mark'), 'nav label carries the sparkle mark')
+  assert.ok(labelHtml.includes('nav'), 'nav label carries the localized text')
 })
 
 test('the settings page renders its initial loading state', async (t) => {

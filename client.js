@@ -542,10 +542,46 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // The nav-row sparkle mark: same geometry as the shell's IconSparkle16,
+    // so the sidebar entry matches the built-in icon language exactly. The
+    // shell hardcodes a gear for unknown section ids; a one-line injected
+    // rule hides it for OUR row only (graceful: without :has() support the
+    // row just shows both icons).
+    function SparkleNavMark(props) {
+      const { className } = props;
+      return React.createElement('svg', {
+        width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none',
+        className, 'aria-hidden': 'true',
+        style: { display: 'inline-block', flex: 'none', marginRight: 8, verticalAlign: '-3px' },
+      },
+        React.createElement('path', { d: 'M6.1 3.1Q6.6 7.8 11.3 8.3Q6.6 8.8 6.1 13.5Q5.6 8.8 0.9 8.3Q5.6 7.8 6.1 3.1Z', fill: 'currentColor' }),
+        React.createElement('path', { d: 'M11.9 1Q12.2 3.7 14.9 4Q12.2 4.3 11.9 7Q11.6 4.3 8.9 4Q11.6 3.7 11.9 1Z', fill: 'currentColor' }),
+        React.createElement('path', { d: 'M12.5 9.4Q12.7 11.4 14.7 11.6Q12.7 11.8 12.5 13.8Q12.3 11.8 10.3 11.6Q12.3 11.4 12.5 9.4Z', fill: 'currentColor' }),
+      );
+    }
+
+    function navLabel(t) {
+      return React.createElement(React.Fragment, null,
+        React.createElement(SparkleNavMark, { className: 'dsh-ogp-nav-mark' }),
+        React.createElement('span', null, t('nav')),
+      );
+    }
+
+    function injectNavStyle() {
+      if (typeof document === 'undefined') return;
+      if (document.getElementById('dsh-ogp-nav-style')) return;
+      const style = document.createElement('style');
+      style.id = 'dsh-ogp-nav-style';
+      // Hide the shell's default gear icon on our nav row only.
+      style.textContent = 'button:has(.dsh-ogp-nav-mark) > svg { display: none; }';
+      document.head.appendChild(style);
+    }
+
     function apply(ctx) {
       const mountReady = ctx.remote.$mount(TYPERT_REMOTE);
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-opencode-go-pool: dictionaries');
       const t = ctx.locale.bind(NS);
+      injectNavStyle();
 
       const api = async () => {
         await mountReady;
@@ -558,7 +594,7 @@ window.__ModuleLoader__.load({
         name: 'settings.section',
         id: 'opencode-go-pool',
         order: 41,
-        label: () => t('nav'),
+        label: () => navLabel(t),
         locale: NS,
         inject: injected,
       }, PoolPage));
