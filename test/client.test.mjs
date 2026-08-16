@@ -196,3 +196,18 @@ test('every Remote descriptor carries strict codecs (client binder requirement)'
     }
   }
 })
+
+test('unwrapRemote handles the typert result envelope', async (t) => {
+  const harness = await loadReact(t)
+  if (!harness) return
+  const spec = await loadClientBundle(t)
+  const module = spec.factory(name => (name === 'react' ? harness.React : (() => { throw new Error(name) })()))
+  const { unwrapRemote } = module.__test
+  // Success envelope → business value.
+  assert.deepEqual(unwrapRemote({ ok: true, value: { keys: [] } }), { keys: [] })
+  // Failure envelope → throws with the host-side message.
+  assert.throws(() => unwrapRemote({ ok: false, error: { message: 'host refused' } }), /host refused/)
+  // Degenerate shapes pass through harmlessly.
+  assert.equal(unwrapRemote(undefined), undefined)
+  assert.deepEqual(unwrapRemote({ ok: true }), { ok: true })
+})

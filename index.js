@@ -86,6 +86,10 @@ function buildProfile(route) {
     retryPolicy: resolveRetryPolicy(undefined, 'opencode-go-pool.catalog.retryPolicy'),
     piProvider: provider,
     configuredMaxTokens: new Map(),
+    // Newer llm-pi-ai builds read modelCapabilities in listModels; a catalog
+    // route with no configured overrides declares none, so an empty map is
+    // the exact contract (capabilityInfo() returns no claims).
+    modelCapabilities: new Map(),
   }
 }
 

@@ -211,6 +211,16 @@ window.__ModuleLoader__.load({
       disabled: { bg: 'transparent', color: 'var(--dsw-alias-label-tertiary)', border: 'var(--dsw-alias-border-l2)', text: t => t('disabledBadge') },
     };
 
+    // The typert client Remote wraps every result in an `{ ok, value }`
+    // envelope (ok:false carries `error.message`); unwrap or throw so the
+    // UI only ever sees business values.
+    function unwrapRemote(result) {
+      if (result && result.ok === false) {
+        throw new Error((result.error && result.error.message) || 'remote failed')
+      }
+      return result && result.value !== undefined ? result.value : result
+    }
+
     function badgeFor(state, active, t) {
       const kind = active && state === 'healthy' ? 'active'
         : state === 'exhausted' ? 'exhausted'
@@ -415,7 +425,7 @@ window.__ModuleLoader__.load({
         try {
           const remote = await api();
           if (!remote) throw new Error('opencodePool remote is unavailable');
-          const result = await remote.status();
+          const result = unwrapRemote(await remote.status());
           setData(result);
           setError(null);
           setFailures(0);
@@ -446,7 +456,7 @@ window.__ModuleLoader__.load({
         try {
           const remote = await api();
           if (!remote) throw new Error('opencodePool remote is unavailable');
-          await fn(remote);
+          await unwrapRemote(await fn(remote));
           await load();
         } catch (err) {
           setNotice({ ok: false, text: `${t('actionFailed')}: ${String((err && err.message) || err)}` });
@@ -457,9 +467,9 @@ window.__ModuleLoader__.load({
 
       const onKeyAction = (kind, id, confirmText, extra) => {
         runAction(async remote => {
-          if (kind === 'setActive') await remote.setActive(id);
-          else if (kind === 'setDisabled') await remote.setDisabled(id, extra !== false);
-          else if (kind === 'clearInvalid') await remote.clearInvalid(id);
+          if (kind === 'setActive') return remote.setActive(id);
+          if (kind === 'setDisabled') return remote.setDisabled(id, extra !== false);
+          return remote.clearInvalid(id);
         }, confirmText);
       };
 
@@ -468,12 +478,17 @@ window.__ModuleLoader__.load({
           setNotice({ ok: false, text: `${t('saveFailed')}: ${invalidMessage}` });
           return;
         }
-        runAction(async remote => { await remote.putKeys(rows); setDraft(null); }, null)
+        runAction(async remote => {
+          const result = await remote.putKeys(rows);
+          if (result && result.ok === false) return result; // keep the draft on refusal
+          setDraft(null);
+          return result;
+        }, null)
           .then(() => setNotice(prev => prev && !prev.ok ? prev : { ok: true, text: t('saved') }));
       };
 
       const takeover = data ? data.takeover : null;
-      const keys = data ? data.keys : [];
+      const keys = Array.isArray(data && data.keys) ? data.keys : [];
 
       return React.createElement('div', { style: styles.wrap },
         React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
@@ -644,7 +659,7 @@ window.__ModuleLoader__.load({
     exports.apply = apply;
     exports.inject = inject;
     // Render-path test hooks (unused by the runtime; see test/client.test.mjs).
-    exports.__test = { KeyCard, UsageBar, badgeFor, fmtReset, usageErrorText, PoolPage, GoMark, TYPERT_REMOTE };
+    exports.__test = { KeyCard, UsageBar, badgeFor, fmtReset, usageErrorText, PoolPage, GoMark, TYPERT_REMOTE, unwrapRemote };
     return module.exports;
   }
 });
