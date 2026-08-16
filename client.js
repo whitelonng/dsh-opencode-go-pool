@@ -590,14 +590,54 @@ window.__ModuleLoader__.load({
       };
       const injected = () => ({ t, api });
 
+      // Error boundary: any render crash inside the page becomes a VISIBLE
+      // diagnostic instead of a blank content column, so problems self-report.
+      class PoolPageBoundary extends React.Component {
+        constructor(props) {
+          super(props);
+          this.state = { error: null };
+        }
+        static getDerivedStateFromError(error) {
+          return { error };
+        }
+        render() {
+          if (this.state.error !== null) {
+            const err = this.state.error;
+            return React.createElement('div', {
+              style: {
+                padding: 16,
+                border: '1px solid var(--dsw-alias-state-error-primary)',
+                borderRadius: 10,
+                color: 'var(--dsw-alias-state-error-primary)',
+                fontSize: 13,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all',
+              },
+            },
+              React.createElement('p', { style: { margin: 0, fontWeight: 600 } }, 'OpenCode Go 套餐池 · 渲染异常'),
+              React.createElement('p', { style: { margin: '8px 0 0' } }, String((err && err.message) || err)),
+              React.createElement('p', { style: { margin: '8px 0 0', opacity: 0.75 } }, String((err && err.stack) || '').slice(0, 1200)),
+            );
+          }
+          return React.createElement(PoolPage, this.props);
+        }
+      }
+
       ctx.slots.inject('settings.section', () => ctx.slots.register({
         name: 'settings.section',
         id: 'opencode-go-pool',
         order: 41,
-        label: () => navLabel(t),
+        label: () => {
+          try {
+            return navLabel(t);
+          } catch {
+            // Degrade to plain text if the shell ever rejects element labels.
+            return t('nav');
+          }
+        },
         locale: NS,
         inject: injected,
-      }, PoolPage));
+      }, PoolPageBoundary));
     }
 
     exports.NS = NS;
