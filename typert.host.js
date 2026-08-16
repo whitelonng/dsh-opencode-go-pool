@@ -1,10 +1,13 @@
 // Hand-written Typert host manifest for the opencodePool Remote.
 // The typert-loader imports this via package.json exports["./typert"] and
 // registers it into ctx.typert.local, which the Host gateway uses to claim
-// and dispatch the "opencodePool/*" endpoints in strict mode. Mutation
-// results are simple values, so they ride as src-json; the business payload
-// (status) is strict-validated against zod on the Host side before it
-// crosses the wire.
+// and dispatch the "opencodePool/*" endpoints in strict mode.
+//
+// IMPORTANT: the typert-loader REQUIRES strict result codecs on EVERY
+// invocation (src-json is rejected at manifest validation, which fails the
+// whole plugin activation). Every result below is therefore a zod v4 schema;
+// the business payload (status) is strict-validated before it crosses the
+// wire, and the simple mutation results ride as strict booleans/strings.
 
 import { z } from 'zod'
 
@@ -62,69 +65,40 @@ const keyInputSchema = z.object({
   apiKeyEnv: z.string(),
 })
 
-const direct = invocation => ({ ...invocation, invocation: { kind: 'direct' } })
-const srcJson = () => ({ mode: 'src-json' })
+const strict = (typeSymbol, schema) => ({ mode: 'strict', typeSymbol, schema })
+
+const invocation = (method, parameters, result) => ({
+  id: `dsh-opencode-go-pool#opencodePool/${method}`,
+  service: 'opencodePool',
+  namespace: 'opencodePool',
+  method,
+  invocation: { kind: 'direct' },
+  parameters: parameters.map(({ name, wire, typeSymbol, schema }) => ({
+    name, wire, source: 'json', codec: strict(typeSymbol, schema),
+  })),
+  result,
+})
 
 export const TYPERT = {
   package: 'dsh-opencode-go-pool',
   face: 'host',
   schemas: [],
   invocations: [
-    direct({
-      id: 'dsh-opencode-go-pool#opencodePool/status',
-      service: 'opencodePool',
-      namespace: 'opencodePool',
-      method: 'status',
-      parameters: [],
-      result: {
-        mode: 'strict',
-        typeSymbol: 'dsh-opencode-go-pool#PoolStatus',
-        schema: poolStatusSchema,
-      },
-    }),
-    direct({
-      id: 'dsh-opencode-go-pool#opencodePool/setActive',
-      service: 'opencodePool',
-      namespace: 'opencodePool',
-      method: 'setActive',
-      parameters: [{ name: 'id', wire: 'id', source: 'json', codec: { mode: 'strict', typeSymbol: 'string', schema: z.string() } }],
-      result: srcJson(),
-    }),
-    direct({
-      id: 'dsh-opencode-go-pool#opencodePool/setDisabled',
-      service: 'opencodePool',
-      namespace: 'opencodePool',
-      method: 'setDisabled',
-      parameters: [
-        { name: 'id', wire: 'id', source: 'json', codec: { mode: 'strict', typeSymbol: 'string', schema: z.string() } },
-        { name: 'on', wire: 'on', source: 'json', codec: { mode: 'strict', typeSymbol: 'boolean', schema: z.boolean() } },
-      ],
-      result: srcJson(),
-    }),
-    direct({
-      id: 'dsh-opencode-go-pool#opencodePool/clearInvalid',
-      service: 'opencodePool',
-      namespace: 'opencodePool',
-      method: 'clearInvalid',
-      parameters: [{ name: 'id', wire: 'id', source: 'json', codec: { mode: 'strict', typeSymbol: 'string', schema: z.string() } }],
-      result: srcJson(),
-    }),
-    direct({
-      id: 'dsh-opencode-go-pool#opencodePool/putKeys',
-      service: 'opencodePool',
-      namespace: 'opencodePool',
-      method: 'putKeys',
-      parameters: [{ name: 'keys', wire: 'keys', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-opencode-go-pool#KeyInputList', schema: z.array(keyInputSchema) } }],
-      result: srcJson(),
-    }),
-    direct({
-      id: 'dsh-opencode-go-pool#opencodePool/takeOverState',
-      service: 'opencodePool',
-      namespace: 'opencodePool',
-      method: 'takeOverState',
-      parameters: [],
-      result: srcJson(),
-    }),
+    invocation('status', [], strict('dsh-opencode-go-pool#PoolStatus', poolStatusSchema)),
+    invocation('setActive', [
+      { name: 'id', wire: 'id', typeSymbol: 'string', schema: z.string() },
+    ], strict('boolean', z.boolean())),
+    invocation('setDisabled', [
+      { name: 'id', wire: 'id', typeSymbol: 'string', schema: z.string() },
+      { name: 'on', wire: 'on', typeSymbol: 'boolean', schema: z.boolean() },
+    ], strict('boolean', z.boolean())),
+    invocation('clearInvalid', [
+      { name: 'id', wire: 'id', typeSymbol: 'string', schema: z.string() },
+    ], strict('boolean', z.boolean())),
+    invocation('putKeys', [
+      { name: 'keys', wire: 'keys', typeSymbol: 'dsh-opencode-go-pool#KeyInputList', schema: z.array(keyInputSchema) },
+    ], strict('boolean', z.boolean())),
+    invocation('takeOverState', [], strict('string', z.string())),
   ],
   model: { services: [], events: [], objects: [] },
 }
