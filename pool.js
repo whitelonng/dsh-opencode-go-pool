@@ -159,10 +159,15 @@ export class KeyPool {
     if (!this.states.has(id)) return false
     const st = this.states.get(id)
     if (st.state !== HEALTHY) return false
-    if (this.preemptAtPercent < 100 && st.usage && st.usage.rolling
-        && typeof st.usage.rolling.percent === 'number'
-        && st.usage.rolling.percent >= this.preemptAtPercent) {
-      return false
+    if (this.preemptAtPercent < 100 && st.usage) {
+      // Preempt on EITHER window: a key whose 5h rolling window OR weekly
+      // window already reached the threshold gets skipped before it fails.
+      for (const window of [st.usage.rolling, st.usage.weekly]) {
+        if (window && typeof window.percent === 'number'
+            && window.percent >= this.preemptAtPercent) {
+          return false
+        }
+      }
     }
     return true
   }

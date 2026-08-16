@@ -85,6 +85,22 @@ test('exhausted keys revive once rolling usage reports ok below threshold', () =
   assert.equal(pool.currentKey().id, 'acc-a')
 })
 
+test('preempt also skips keys whose WEEKLY window reached the threshold', () => {
+  const pool = freshPool()
+  pool.setPreempt(90)
+  pool.syncKeys(KEYS)
+  // Rolling low, but weekly full: the key is preempted anyway.
+  pool.onUsage('acc-a', {
+    rolling: { status: 'ok', percent: 44 },
+    weekly: { status: 'rate-limited', percent: 100 },
+    monthly: { status: 'ok', percent: 51 },
+  })
+  assert.equal(pool.currentKey().id, 'acc-b')
+  // With preemption off (100) the same key is usable again.
+  pool.setPreempt(100)
+  assert.equal(pool.isUsable('acc-a'), true)
+})
+
 test('preemptAtPercent skips healthy keys near exhaustion', () => {
   const pool = freshPool()
   pool.setPreempt(98)

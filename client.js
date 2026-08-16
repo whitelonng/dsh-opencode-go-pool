@@ -71,7 +71,13 @@ window.__ModuleLoader__.load({
       secretPlaceholder: '粘贴 sk-... 密钥（留空则不修改）',
       envInvalidHint: '引用名不是密钥！密钥请粘贴到第三个「密钥」栏；引用名留空即可自动生成',
       strategyTitle: '切号策略',
-      strategyHint: '两种自动切换规则：① 5 小时窗口用量达到阈值主动避让；② 调用连续失败 N 次自动切号（0=关闭）。额度耗尽或凭据失效始终立即切换。',
+      strategyHint: '避让：5 小时滚动窗口或每周窗口任一达到阈值即提前切走（100=仅失败时切）；连败：模型调用失败累计 N 次切号（0=关闭）。额度耗尽或凭据失效始终立即切换。',
+      preemptLead: '5h/每周用量达到',
+      preemptUnit: '% 自动避让',
+      consecLead: '连续失败',
+      consecUnit: '次切号',
+      refreshing: '刷新中…',
+      updatedAt: '数据更新于',
       preemptLabel: '5 小时用量达到 % 自动切号（100=仅失败时切）',
       consecLabel: '连续失败次数达到后自动切号（0=关闭）',
       consecNote: '连败切号',
@@ -144,7 +150,13 @@ window.__ModuleLoader__.load({
       secretPlaceholder: 'paste the sk-... secret (empty = keep)',
       envInvalidHint: 'the ref name is not the secret! Paste the secret into the third field, or leave the ref name empty to auto-generate',
       strategyTitle: 'Switching strategy',
-      strategyHint: 'Two automatic switching rules: ① preempt when the 5h window usage reaches the threshold; ② switch after N consecutive call failures (0=off). Quota exhaustion or credential failure always switches immediately.',
+      strategyHint: 'Avoid: switch ahead once the 5h rolling OR weekly window reaches the threshold (100=fail-only). Consecutive: switch after N accumulated call failures (0=off). Quota exhaustion or an invalid credential always switches immediately.',
+      preemptLead: 'Auto-avoid at',
+      preemptUnit: '% 5h/weekly usage',
+      consecLead: 'switch after',
+      consecUnit: 'consecutive failures',
+      refreshing: 'Refreshing…',
+      updatedAt: 'updated',
       preemptLabel: 'Auto-switch at 5h usage % (100=fail-only)',
       consecLabel: 'Switch after N consecutive failures (0=off)',
       consecNote: 'consec. failures',
@@ -488,6 +500,8 @@ window.__ModuleLoader__.load({
         if (!Number.isFinite(consec) || consec < 0 || consec > 20) { onSave(null, t('consecLabel')); return; }
         onSave({ preemptAtPercent: preempt, switchAfterConsecutiveFailures: consec });
       };
+      const rowStyle = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 13, color: 'var(--dsw-alias-label-secondary)' };
+      const smallInput = { width: 64, flex: 'none' };
       return React.createElement('div', { style: styles.card },
         React.createElement('div', { style: styles.cardHead },
           React.createElement('div', null,
@@ -495,25 +509,23 @@ window.__ModuleLoader__.load({
             React.createElement('p', { style: styles.cardMeta }, t('strategyHint')),
           ),
         ),
-        React.createElement('div', { style: styles.barRow },
-          React.createElement('span', { style: { ...styles.barHead, marginBottom: 4 } }, t('preemptLabel')),
+        React.createElement('div', { style: rowStyle },
+          React.createElement('span', null, t('preemptLead')),
           React.createElement('input', {
-            style: { ...styles.input, maxWidth: 160 },
+            style: { ...styles.input, ...smallInput },
             value: value.preempt,
             disabled: busy !== null,
             onChange: event => update('preempt', event.target.value),
           }),
-        ),
-        React.createElement('div', { style: styles.barRow },
-          React.createElement('span', { style: { ...styles.barHead, marginBottom: 4 } }, t('consecLabel')),
+          React.createElement('span', null, t('preemptUnit')),
+          React.createElement('span', null, t('consecLead')),
           React.createElement('input', {
-            style: { ...styles.input, maxWidth: 160 },
+            style: { ...styles.input, ...smallInput },
             value: value.consec,
             disabled: busy !== null,
             onChange: event => update('consec', event.target.value),
           }),
-        ),
-        React.createElement('div', { style: styles.actions },
+          React.createElement('span', null, t('consecUnit')),
           React.createElement('button', {
             style: { ...styles.button, ...styles.buttonPrimary, ...(busy !== null ? styles.buttonDisabled : {}) },
             disabled: busy !== null,
@@ -534,8 +546,11 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = React.useState(null);
       const [draft, setDraft] = React.useState(null);
       const [strategy, setStrategy] = React.useState(null);
+      const [refreshing, setRefreshing] = React.useState(false);
+      const [loadedAt, setLoadedAt] = React.useState(null);
 
       const load = React.useCallback(async () => {
+        setRefreshing(true);
         try {
           const remote = await api();
           if (!remote) throw new Error('opencodePool remote is unavailable');
@@ -543,12 +558,15 @@ window.__ModuleLoader__.load({
           setData(result);
           setError(null);
           setFailures(0);
+          setLoadedAt(new Date());
           if (result && typeof result.usageRefreshMs === 'number' && result.usageRefreshMs > 0) {
             setPollMs(result.usageRefreshMs);
           }
         } catch (err) {
           setFailures(prev => prev + 1);
           setError(String((err && err.message) || err));
+        } finally {
+          setRefreshing(false);
         }
       }, [api]);
 
@@ -698,7 +716,12 @@ window.__ModuleLoader__.load({
               ? React.createElement('p', { style: { ...styles.notice, ...(notice.ok ? styles.noticeOk : styles.noticeErr) } }, notice.text)
               : null,
             React.createElement('div', { style: styles.actions },
-              React.createElement('button', { style: styles.button, disabled: busy !== null, onClick: load }, t('refresh')),
+              React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+                React.createElement('button', { style: styles.button, disabled: busy !== null || refreshing, onClick: load }, refreshing ? t('refreshing') : t('refresh')),
+                loadedAt
+                  ? React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, `${t('updatedAt')} ${loadedAt.toLocaleTimeString()}`)
+                  : null,
+              ),
             ),
           ),
       );
