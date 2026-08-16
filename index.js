@@ -347,7 +347,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
           timeoutMs: cfg.timeoutMs,
         }))
         this.pool.onUsage(entry.id, usage)
-        return { id: entry.id, usage, usageError: null, fetchedAt }
+        return { id: entry.id, usage, usageError: null, fetchedAt, credentialSet: true }
       } catch (error) {
         const code = error && error.code ? error.code : 'network'
         return {
@@ -355,6 +355,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
           usage: null,
           usageError: code === 'MISSING_CREDENTIAL' ? 'no-api-key' : code,
           fetchedAt: null,
+          credentialSet: code !== 'MISSING_CREDENTIAL',
         }
       }
     }))
@@ -378,6 +379,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
           usage: (result && result.usage) ?? null,
           usageError: (result && result.usageError) ?? null,
           fetchedAt: (result && result.fetchedAt) ?? null,
+          credentialSet: (result && result.credentialSet) ?? false,
           lastFailure: st.lastFailure ?? null,
         }
       }),
@@ -402,6 +404,31 @@ export class OpenCodeGoPool extends TypertRemoteService {
   async putKeys(keys) {
     assertKeyList(keys)
     await this.scope.update({ keys })
+    return true
+  }
+
+  /**
+   * Store one key's literal secret through the credentials seam under its
+   * configured reference name. The secret never enters settings, logs, or
+   * any response — the same carrier and trust domain the Models page uses
+   * when it writes credentials.
+   */
+  async putKeySecret(id, secret) {
+    const entry = this.pool.entries().find(item => item.id === id)
+    if (!entry) throw new Error(`unknown key "${id}"`)
+    if (typeof secret !== 'string' || secret.trim().length === 0) {
+      throw new Error(`key "${id}" needs a non-empty secret`)
+    }
+    const credentials = this.ctx.get('credentials')
+    if (!credentials || typeof credentials.set !== 'function') {
+      throw new Error('no credentials service is mounted — set the key through the credentials page instead')
+    }
+    const ref = credentialRef(entry.apiKeyEnv)
+    const usable = assertUsableApiKey(secret.trim(), 'opencode-go-pool', ref)
+    await credentials.set(ref, usable)
+    // A freshly supplied secret may repair an invalid-marked key.
+    this.pool.clearInvalid(id)
+    this.usageCache.invalidate(id)
     return true
   }
 

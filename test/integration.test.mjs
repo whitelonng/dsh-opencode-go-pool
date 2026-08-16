@@ -218,3 +218,31 @@ test('a different route config registers its own route alongside the owner', asy
   assert.ok(providers.some(p => p.id === 'opencode-go-pool'), 'own route coexists')
   await root.fiber.dispose()
 })
+
+test('putKeySecret stores the literal through the credentials seam, never into settings', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, LlmRuntime, MemorySettings, OpenCodeGoPool } = harness
+
+  const root = new Context()
+  await root.plugin(LlmRuntime)
+  const memorySettings = new MemorySettings(root)
+  const written = []
+  root.provide('credentials', {
+    resolve: async () => undefined,
+    set: async (ref, value) => { written.push({ ref, value }) },
+  })
+  await root.plugin(OpenCodeGoPool, { keys: TWO_KEYS })
+  const plugin = root.get('opencodePool')
+
+  await plugin.putKeySecret('acc-a', 'sk-opencode-test-aaaa')
+  assert.equal(written.length, 1)
+  assert.equal(written[0].value, 'sk-opencode-test-aaaa')
+  assert.equal(written[0].ref, 'OPENCODE_GO_KEY_A')
+  // The secret never lands in the settings document.
+  assert.ok(!JSON.stringify(memorySettings.doc).includes('sk-opencode-test-aaaa'))
+
+  await assert.rejects(() => plugin.putKeySecret('nope', 'x'), /unknown key/)
+  await assert.rejects(() => plugin.putKeySecret('acc-a', '   '), /non-empty secret/)
+  await root.fiber.dispose()
+})

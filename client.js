@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
       switchInvalid: '凭据失效',
       switchManual: '手动',
       manageTitle: 'Key 管理',
-      manageHint: 'id 自动生成；label 为显示名；凭据引用对应凭据页中的环境变量名。',
+      manageHint: 'id 自动生成；label 为显示名；密钥直接粘贴（留空则不修改）；凭据引用名留空会自动生成。',
       addKey: '添加 Key',
       remove: '删除',
       save: '保存',
@@ -66,7 +66,9 @@ window.__ModuleLoader__.load({
       saved: '已保存',
       saveFailed: '保存失败',
       labelPlaceholder: '显示名，如 主号',
-      envPlaceholder: '如 OPENCODE_GO_KEY_A',
+      envPlaceholder: '引用名，留空自动生成（如 OPENCODE_GO_KEY_A）',
+      secretPlaceholder: '粘贴 sk-... 密钥（留空则不修改）',
+      envInvalidHint: '引用名不是密钥！密钥请粘贴到第三个「密钥」栏；引用名留空即可自动生成',
       confirmSwitch: '立即切换到该 Key？',
       confirmDisable: '停用该 Key？停用后不再参与自动切换。',
       confirmRemove: '删除该 Key？其运行状态将一并清除。',
@@ -119,7 +121,7 @@ window.__ModuleLoader__.load({
       switchInvalid: 'credential',
       switchManual: 'manual',
       manageTitle: 'Key management',
-      manageHint: 'id is auto-generated; label is the display name; the credential ref names the environment entry on the credentials page.',
+      manageHint: 'id is auto-generated; label is the display name; paste the secret directly (empty = keep); the credential ref auto-generates when left empty.',
       addKey: 'Add key',
       remove: 'Remove',
       save: 'Save',
@@ -127,7 +129,9 @@ window.__ModuleLoader__.load({
       saved: 'Saved',
       saveFailed: 'Save failed',
       labelPlaceholder: 'display name, e.g. main',
-      envPlaceholder: 'e.g. OPENCODE_GO_KEY_A',
+      envPlaceholder: 'ref name, auto when empty (e.g. OPENCODE_GO_KEY_A)',
+      secretPlaceholder: 'paste the sk-... secret (empty = keep)',
+      envInvalidHint: 'the ref name is not the secret! Paste the secret into the third field, or leave the ref name empty to auto-generate',
       confirmSwitch: 'Switch to this key now?',
       confirmDisable: 'Disable this key? It stops taking part in failover.',
       confirmRemove: 'Remove this key? Its runtime state is cleared too.',
@@ -166,6 +170,7 @@ window.__ModuleLoader__.load({
         DESCRIPTOR('setDisabled', ['id', 'on']),
         DESCRIPTOR('clearInvalid', ['id']),
         DESCRIPTOR('putKeys', ['keys']),
+        DESCRIPTOR('putKeySecret', ['id', 'secret']),
         DESCRIPTOR('takeOverState', []),
       ],
     };
@@ -355,13 +360,22 @@ window.__ModuleLoader__.load({
         setDraft(prev => prev.filter((_, i) => i !== index));
       };
       const add = () => {
-        setDraft(prev => [...prev, { id: 'key-' + Date.now().toString(36), label: '', apiKeyEnv: '' }]);
+        setDraft(prev => [...prev, { id: 'key-' + Date.now().toString(36), label: '', apiKeyEnv: '', secret: '' }]);
       };
       const save = () => {
-        const rows = draft.map(row => ({ id: row.id, label: row.label.trim(), apiKeyEnv: row.apiKeyEnv.trim() }));
+        const rows = draft.map(row => ({
+          id: row.id,
+          label: (row.label || '').trim(),
+          apiKeyEnv: (row.apiKeyEnv || '').trim(),
+          secret: (row.secret || '').trim(),
+        }));
         for (const row of rows) {
           if (!row.label) { onSave(null, t('labelPlaceholder')); return; }
-          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(row.apiKeyEnv)) { onSave(null, t('envPlaceholder')); return; }
+          // The secret belongs in its own field; a reference name must look
+          // like an environment variable. An empty one auto-generates.
+          if (row.apiKeyEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(row.apiKeyEnv)) {
+            onSave(null, t('envInvalidHint')); return;
+          }
         }
         onSave(rows);
       };
@@ -387,6 +401,15 @@ window.__ModuleLoader__.load({
             value: row.apiKeyEnv,
             disabled: busy !== null,
             onChange: event => update(index, 'apiKeyEnv', event.target.value),
+          }),
+          React.createElement('input', {
+            style: styles.input,
+            type: 'password',
+            autoComplete: 'off',
+            placeholder: t('secretPlaceholder'),
+            value: row.secret,
+            disabled: busy !== null,
+            onChange: event => update(index, 'secret', event.target.value),
           }),
           React.createElement('button', {
             style: { ...styles.button, ...styles.buttonDanger, ...(busy !== null ? styles.buttonDisabled : {}) },
@@ -479,8 +502,20 @@ window.__ModuleLoader__.load({
           return;
         }
         runAction(async remote => {
-          const result = await remote.putKeys(rows);
+          // Persist the key list first; an empty reference name auto-generates
+          // from the key id, so pasting just a label + secret always works.
+          const keys = rows.map(row => ({
+            id: row.id,
+            label: row.label,
+            apiKeyEnv: row.apiKeyEnv || 'OPENCODE_GO_KEY_' + row.id.replace(/[^A-Za-z0-9_]/g, '_').toUpperCase(),
+          }));
+          let result = await remote.putKeys(keys);
           if (result && result.ok === false) return result; // keep the draft on refusal
+          for (const row of rows) {
+            if (!row.secret) continue;
+            result = await remote.putKeySecret(row.id, row.secret);
+            if (result && result.ok === false) return result;
+          }
           setDraft(null);
           return result;
         }, null)
@@ -544,7 +579,7 @@ window.__ModuleLoader__.load({
               ? React.createElement('button', {
                 style: styles.button,
                 disabled: busy !== null,
-                onClick: () => setDraft(keys.map(k => ({ id: k.id, label: k.label, apiKeyEnv: k.apiKeyEnv }))),
+                onClick: () => setDraft(keys.map(k => ({ id: k.id, label: k.label, apiKeyEnv: k.apiKeyEnv, secret: '' }))),
               }, t('manageTitle'))
               : React.createElement(Editor, { draft, setDraft, t, busy, onSave: onSaveKeys }),
             notice

@@ -38,6 +38,7 @@ const keyStatusSchema = z.object({
   usage: usageSchema.nullable(),
   usageError: z.string().nullable(),
   fetchedAt: z.string().nullable(),
+  credentialSet: z.boolean(),
   lastFailure: lastFailureSchema.nullable(),
 })
 
@@ -97,6 +98,10 @@ export const TYPERT = {
     ], strict('boolean', z.boolean())),
     invocation('putKeys', [
       { name: 'keys', wire: 'keys', typeSymbol: 'dsh-opencode-go-pool#KeyInputList', schema: z.array(keyInputSchema) },
+    ], strict('boolean', z.boolean())),
+    invocation('putKeySecret', [
+      { name: 'id', wire: 'id', typeSymbol: 'string', schema: z.string() },
+      { name: 'secret', wire: 'secret', typeSymbol: 'string', schema: z.string() },
     ], strict('boolean', z.boolean())),
     invocation('takeOverState', [], strict('string', z.string())),
   ],
