@@ -86,10 +86,11 @@ export class KeyPool {
    * @param {number} [options.preemptAtPercent] - skip healthy keys whose rolling usage reached this (default 100 = never preempt).
    * @param {() => number} [options.now] - clock injection for tests.
    */
-  constructor({ stateFile = null, reviveThresholdPercent = 98, preemptAtPercent = 100, now = () => Date.now() } = {}) {
+  constructor({ stateFile = null, reviveThresholdPercent = 98, preemptAtPercent = 100, consecutiveThreshold = 0, now = () => Date.now() } = {}) {
     this.stateFile = stateFile
     this.reviveThresholdPercent = reviveThresholdPercent
     this.preemptAtPercent = preemptAtPercent
+    this.consecutiveThreshold = consecutiveThreshold
     this.now = now
     /** @type {Array<{id: string, label: string, apiKeyEnv: string}>} ordered key entries. */
     this.keys = []
@@ -108,6 +109,10 @@ export class KeyPool {
     this.preemptAtPercent = percent
   }
 
+  setConsecutiveThreshold(count) {
+    this.consecutiveThreshold = count
+  }
+
   setReviveThreshold(percent) {
     this.reviveThresholdPercent = percent
   }
@@ -124,7 +129,8 @@ export class KeyPool {
     this.states = new Map()
     for (const entry of this.keys) {
       const prev = before.get(entry.id)
-      this.states.set(entry.id, prev ?? { state: HEALTHY, usage: null, lastFailure: null })
+      this.states.set(entry.id, prev ?? { state: HEALTHY, usage: null, lastFailure: null, failureStreak: 0 })
+      if (this.states.get(entry.id).failureStreak === undefined) this.states.get(entry.id).failureStreak = 0
     }
     if (this.activeId !== null && !this.states.has(this.activeId)) this.activeId = null
     if (this.activeId === null || !this.isUsable(this.activeId)) {
@@ -145,7 +151,7 @@ export class KeyPool {
   }
 
   stateOf(id) {
-    return this.states.get(id) ?? { state: HEALTHY, usage: null, lastFailure: null }
+    return this.states.get(id) ?? { state: HEALTHY, usage: null, lastFailure: null, failureStreak: 0 }
   }
 
   /** A key is usable when healthy, not preempted by usage, and present. */
@@ -164,6 +170,17 @@ export class KeyPool {
   pickFirstUsableId() {
     const entry = this.keys.find(key => this.isUsable(key.id))
     return entry ? entry.id : null
+  }
+
+  /** Next usable key in configuration order after `afterId` (round-robin). */
+  pickNextUsableId(afterId) {
+    const index = this.keys.findIndex(key => key.id === afterId)
+    if (index < 0) return this.pickFirstUsableId()
+    for (let step = 1; step <= this.keys.length; step++) {
+      const key = this.keys[(index + step) % this.keys.length]
+      if (this.isUsable(key.id)) return key.id
+    }
+    return null
   }
 
   usableCount() {
@@ -233,9 +250,36 @@ export class KeyPool {
     if (!this.states.has(id)) return null
     const code = failure && failure.code ? String(failure.code) : ''
     const reason = isQuotaCode(code) ? 'quota' : (isInvalidCode(code) ? 'invalid' : null)
-    if (reason === null) return null
     const st = this.states.get(id)
+    if (reason === null) {
+      // Transient failure (rate limit, server, timeout, …): count the streak
+      // and rotate away once configured consecutive failures accumulate.
+      st.failureStreak = (st.failureStreak ?? 0) + 1
+      st.lastFailure = {
+        code,
+        message: String((failure && failure.message) || ''),
+        at: new Date(this.now()).toISOString(),
+      }
+      if (this.consecutiveThreshold > 0 && st.failureStreak >= this.consecutiveThreshold) {
+        st.failureStreak = 0
+        const next = this.pickNextUsableId(id)
+        if (next !== null && next !== id) {
+          this.activeId = next
+          this.lastSwitch = {
+            from: id,
+            to: next,
+            reason: 'consecutive',
+            at: new Date(this.now()).toISOString(),
+          }
+          this.persist()
+          return { from: id, to: next }
+        }
+      }
+      this.persist()
+      return null
+    }
     st.state = reason === 'quota' ? EXHAUSTED : INVALID
+    st.failureStreak = 0
     st.lastFailure = {
       code,
       message: String((failure && failure.message) || ''),
@@ -250,6 +294,16 @@ export class KeyPool {
     }
     this.persist()
     return { from: id, to: this.activeId }
+  }
+
+  /** A successful request resets the transient-failure streak. */
+  onSuccess(id) {
+    if (!this.states.has(id)) return
+    const st = this.states.get(id)
+    if (st.failureStreak !== 0) {
+      st.failureStreak = 0
+      this.persist()
+    }
   }
 
   /**
@@ -278,7 +332,7 @@ export class KeyPool {
   snapshot() {
     const states = {}
     for (const [id, st] of this.states.entries()) {
-      states[id] = { state: st.state, usage: st.usage ?? null, lastFailure: st.lastFailure ?? null }
+      states[id] = { state: st.state, usage: st.usage ?? null, lastFailure: st.lastFailure ?? null, failureStreak: st.failureStreak ?? 0 }
     }
     return { version: 1, activeId: this.activeId, lastSwitch: this.lastSwitch, states }
   }
@@ -310,6 +364,7 @@ export class KeyPool {
             state,
             usage: st.usage ?? null,
             lastFailure: st.lastFailure ?? null,
+            failureStreak: typeof st.failureStreak === 'number' ? st.failureStreak : 0,
           })
         }
       }

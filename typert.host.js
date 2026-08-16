@@ -54,6 +54,7 @@ const poolStatusSchema = z.object({
   route: z.string(),
   usageRefreshMs: z.number(),
   preemptAtPercent: z.number(),
+  switchAfterConsecutiveFailures: z.number(),
   activeId: z.string().nullable(),
   lastSwitch: lastSwitchSchema.nullable(),
   takeoverHint: z.string().nullable(),
@@ -98,6 +99,12 @@ export const TYPERT = {
     ], strict('boolean', z.boolean())),
     invocation('putKeys', [
       { name: 'keys', wire: 'keys', typeSymbol: 'dsh-opencode-go-pool#KeyInputList', schema: z.array(keyInputSchema) },
+    ], strict('boolean', z.boolean())),
+    invocation('putConfig', [
+      { name: 'config', wire: 'config', typeSymbol: 'dsh-opencode-go-pool#PoolConfigPatch', schema: z.object({
+        preemptAtPercent: z.number().optional(),
+        switchAfterConsecutiveFailures: z.number().optional(),
+      }) },
     ], strict('boolean', z.boolean())),
     invocation('putKeySecret', [
       { name: 'id', wire: 'id', typeSymbol: 'string', schema: z.string() },

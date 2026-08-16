@@ -171,7 +171,24 @@ test('KeyCard renders failure badges and error text without usage data', async (
   }))
   assert.ok(html.includes('exhaustedBadge'), 'shows the exhausted badge')
   assert.ok(html.includes('httpError'), 'shows the usage error text')
-  assert.ok(html.includes('switchNow'), 'offers manual switch for a non-active key')
+  assert.ok(!html.includes('switchNow'), 'no manual switch on an unusable key')
+
+  // A healthy idle key DOES offer manual switching.
+  const healthyHtml = renderToString(React.createElement(KeyCard, {
+    item: {
+      id: 'acc-c',
+      label: '备用3',
+      apiKeyEnv: 'OPENCODE_GO_KEY_C',
+      state: 'healthy',
+      active: false,
+      usage: null,
+      usageError: null,
+      fetchedAt: null,
+      lastFailure: null,
+    },
+    t: key => key, tick: Date.now(), busy: null, onAction: () => {},
+  }))
+  assert.ok(healthyHtml.includes('switchNow'), 'manual switch offered on a usable idle key')
   assert.ok(html.includes('disable'), 'offers disable')
 })
 

@@ -55,6 +55,7 @@ window.__ModuleLoader__.load({
       clearInvalid: '清除失效',
       lastSwitch: '最近切换',
       switchQuota: '额度耗尽',
+      switchConsecutive: '连续失败',
       switchInvalid: '凭据失效',
       switchManual: '手动',
       manageTitle: 'Key 管理',
@@ -69,6 +70,15 @@ window.__ModuleLoader__.load({
       envPlaceholder: '引用名，留空自动生成（如 OPENCODE_GO_KEY_A）',
       secretPlaceholder: '粘贴 sk-... 密钥（留空则不修改）',
       envInvalidHint: '引用名不是密钥！密钥请粘贴到第三个「密钥」栏；引用名留空即可自动生成',
+      strategyTitle: '切号策略',
+      strategyHint: '两种自动切换规则：① 5 小时窗口用量达到阈值主动避让；② 调用连续失败 N 次自动切号（0=关闭）。额度耗尽或凭据失效始终立即切换。',
+      preemptLabel: '5 小时用量达到 % 自动切号（100=仅失败时切）',
+      consecLabel: '连续失败次数达到后自动切号（0=关闭）',
+      consecNote: '连败切号',
+      existingRowTag: '已有',
+      newRowTag: '新增',
+      confirmRemoveExisting: '以下已有 Key 将从池中移除：',
+      activeBanner: '当前使用',
       confirmSwitch: '立即切换到该 Key？',
       confirmDisable: '停用该 Key？停用后不再参与自动切换。',
       confirmRemove: '删除该 Key？其运行状态将一并清除。',
@@ -118,6 +128,7 @@ window.__ModuleLoader__.load({
       clearInvalid: 'Clear invalid',
       lastSwitch: 'last switch',
       switchQuota: 'quota',
+      switchConsecutive: 'consecutive failures',
       switchInvalid: 'credential',
       switchManual: 'manual',
       manageTitle: 'Key management',
@@ -132,6 +143,15 @@ window.__ModuleLoader__.load({
       envPlaceholder: 'ref name, auto when empty (e.g. OPENCODE_GO_KEY_A)',
       secretPlaceholder: 'paste the sk-... secret (empty = keep)',
       envInvalidHint: 'the ref name is not the secret! Paste the secret into the third field, or leave the ref name empty to auto-generate',
+      strategyTitle: 'Switching strategy',
+      strategyHint: 'Two automatic switching rules: ① preempt when the 5h window usage reaches the threshold; ② switch after N consecutive call failures (0=off). Quota exhaustion or credential failure always switches immediately.',
+      preemptLabel: 'Auto-switch at 5h usage % (100=fail-only)',
+      consecLabel: 'Switch after N consecutive failures (0=off)',
+      consecNote: 'consec. failures',
+      existingRowTag: 'existing',
+      newRowTag: 'new',
+      confirmRemoveExisting: 'These existing keys will be removed from the pool:',
+      activeBanner: 'in use',
       confirmSwitch: 'Switch to this key now?',
       confirmDisable: 'Disable this key? It stops taking part in failover.',
       confirmRemove: 'Remove this key? Its runtime state is cleared too.',
@@ -171,6 +191,7 @@ window.__ModuleLoader__.load({
         DESCRIPTOR('clearInvalid', ['id']),
         DESCRIPTOR('putKeys', ['keys']),
         DESCRIPTOR('putKeySecret', ['id', 'secret']),
+        DESCRIPTOR('putConfig', ['config']),
         DESCRIPTOR('takeOverState', []),
       ],
     };
@@ -322,13 +343,16 @@ window.__ModuleLoader__.load({
             React.createElement(UsageBar, { name: t('monthly'), windowData: usage.monthly, t, tick }),
           ),
         React.createElement('div', { style: styles.actions },
-          isActive
-            ? null
-            : React.createElement('button', {
+          // Manual switch only makes sense on a usable key (healthy + not
+          // already active). Disabled/exhausted/invalid keys would be
+          // rejected by the host ("not usable right now").
+          item.state === 'healthy' && !isActive
+            ? React.createElement('button', {
               style: { ...styles.button, ...styles.buttonPrimary, ...(disabled ? styles.buttonDisabled : {}) },
               disabled,
               onClick: () => onAction('setActive', item.id, t('confirmSwitch')),
-            }, t('switchNow')),
+            }, t('switchNow'))
+            : null,
           item.state === 'disabled'
             ? React.createElement('button', {
               style: { ...styles.button, ...(disabled ? styles.buttonDisabled : {}) },
@@ -352,7 +376,8 @@ window.__ModuleLoader__.load({
     }
 
     function Editor(props) {
-      const { draft, setDraft, t, busy, onSave } = props;
+      const { draft, setDraft, t, busy, onSave, existingKeys } = props;
+      const existingIds = new Set((existingKeys || []).map(k => k.id));
       const update = (index, field, value) => {
         setDraft(prev => prev.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
       };
@@ -377,6 +402,14 @@ window.__ModuleLoader__.load({
             onSave(null, t('envInvalidHint')); return;
           }
         }
+        // Deleting an already-saved key is destructive; confirm before wiping.
+        const draftIds = new Set(rows.map(r => r.id));
+        const removed = (existingKeys || []).filter(k => !draftIds.has(k.id));
+        if (removed.length > 0
+            && typeof window !== 'undefined' && typeof window.confirm === 'function'
+            && !window.confirm(`${t('confirmRemoveExisting')}\n${removed.map(k => k.label).join('、')}`)) {
+          return;
+        }
         onSave(rows);
       };
       return React.createElement('div', { style: styles.card },
@@ -387,7 +420,12 @@ window.__ModuleLoader__.load({
           ),
         ),
         draft.map((row, index) => React.createElement('div', { key: row.id, style: styles.editorRow },
-          React.createElement('span', { style: styles.editorId }, row.id),
+          React.createElement('span', { style: styles.editorId },
+            row.id,
+            React.createElement('span', {
+              style: { marginLeft: 6, opacity: 0.6, fontSize: 11 },
+            }, existingIds.has(row.id) ? t('existingRowTag') : t('newRowTag')),
+          ),
           React.createElement('input', {
             style: styles.input,
             placeholder: t('labelPlaceholder'),
@@ -433,6 +471,58 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** Switching-strategy form: the two configurable auto-switch rules. */
+    function StrategyCard(props) {
+      const { t, data, strategy, setStrategy, busy, onSave } = props;
+      const value = strategy !== null
+        ? strategy
+        : { preempt: String(data.preemptAtPercent ?? 100), consec: String(data.switchAfterConsecutiveFailures ?? 0) };
+      const update = (field, raw) => {
+        const next = { ...value, [field]: raw };
+        setStrategy(next);
+      };
+      const save = () => {
+        const preempt = Number(value.preempt);
+        const consec = Number(value.consec);
+        if (!Number.isFinite(preempt) || preempt < 0 || preempt > 100) { onSave(null, t('preemptLabel')); return; }
+        if (!Number.isFinite(consec) || consec < 0 || consec > 20) { onSave(null, t('consecLabel')); return; }
+        onSave({ preemptAtPercent: preempt, switchAfterConsecutiveFailures: consec });
+      };
+      return React.createElement('div', { style: styles.card },
+        React.createElement('div', { style: styles.cardHead },
+          React.createElement('div', null,
+            React.createElement('h3', { style: styles.cardName }, t('strategyTitle')),
+            React.createElement('p', { style: styles.cardMeta }, t('strategyHint')),
+          ),
+        ),
+        React.createElement('div', { style: styles.barRow },
+          React.createElement('span', { style: { ...styles.barHead, marginBottom: 4 } }, t('preemptLabel')),
+          React.createElement('input', {
+            style: { ...styles.input, maxWidth: 160 },
+            value: value.preempt,
+            disabled: busy !== null,
+            onChange: event => update('preempt', event.target.value),
+          }),
+        ),
+        React.createElement('div', { style: styles.barRow },
+          React.createElement('span', { style: { ...styles.barHead, marginBottom: 4 } }, t('consecLabel')),
+          React.createElement('input', {
+            style: { ...styles.input, maxWidth: 160 },
+            value: value.consec,
+            disabled: busy !== null,
+            onChange: event => update('consec', event.target.value),
+          }),
+        ),
+        React.createElement('div', { style: styles.actions },
+          React.createElement('button', {
+            style: { ...styles.button, ...styles.buttonPrimary, ...(busy !== null ? styles.buttonDisabled : {}) },
+            disabled: busy !== null,
+            onClick: save,
+          }, t('save')),
+        ),
+      );
+    }
+
     function PoolPage(props) {
       const { t, api } = props;
       const [data, setData] = React.useState(null);
@@ -443,6 +533,7 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(null);
       const [notice, setNotice] = React.useState(null);
       const [draft, setDraft] = React.useState(null);
+      const [strategy, setStrategy] = React.useState(null);
 
       const load = React.useCallback(async () => {
         try {
@@ -522,6 +613,14 @@ window.__ModuleLoader__.load({
           .then(() => setNotice(prev => prev && !prev.ok ? prev : { ok: true, text: t('saved') }));
       };
 
+      const onSetStrategy = (patch) => {
+        runAction(async remote => remote.putConfig(patch), null)
+          .then(() => {
+            setStrategy(null); // re-derive the form from the server values
+            setNotice(prev => prev && !prev.ok ? prev : { ok: true, text: t('saved') });
+          });
+      };
+
       const takeover = data ? data.takeover : null;
       const keys = Array.isArray(data && data.keys) ? data.keys : [];
 
@@ -556,15 +655,28 @@ window.__ModuleLoader__.load({
                 ? React.createElement('p', { style: styles.hint }, data.takeoverHint ? `${t('takeoverWaitingHint')} ${data.takeoverHint}` : t('takeoverWaitingHint'))
                 : null,
               data.activeId
-                ? React.createElement('p', { style: styles.hint }, `${t('activeBadge')}: ${data.activeId} · ${t('preemptNote')}: ${data.preemptAtPercent >= 100 ? t('preemptOff') : data.preemptAtPercent + '%'}`)
+                ? React.createElement('p', { style: styles.hint },
+                    `${t('activeBanner')}: ${data.activeId} · ${t('preemptNote')}: ${data.preemptAtPercent >= 100 ? t('preemptOff') : data.preemptAtPercent + '%'} · ${t('consecNote')}: ${data.switchAfterConsecutiveFailures > 0 ? data.switchAfterConsecutiveFailures : t('preemptOff')}`)
                 : null,
               data.lastSwitch
-                ? React.createElement('p', { style: styles.hint }, `${t('lastSwitch')}: ${data.lastSwitch.from ?? '—'} → ${data.lastSwitch.to ?? '—'} (${data.lastSwitch.reason === 'quota' ? t('switchQuota') : data.lastSwitch.reason === 'invalid' ? t('switchInvalid') : t('switchManual')}) @ ${new Date(data.lastSwitch.at).toLocaleString()}`)
+                ? React.createElement('p', { style: styles.hint }, `${t('lastSwitch')}: ${data.lastSwitch.from ?? '—'} → ${data.lastSwitch.to ?? '—'} (${data.lastSwitch.reason === 'quota' ? t('switchQuota') : data.lastSwitch.reason === 'invalid' ? t('switchInvalid') : data.lastSwitch.reason === 'consecutive' ? t('switchConsecutive') : t('switchManual')}) @ ${new Date(data.lastSwitch.at).toLocaleString()}`)
                 : null,
               keys.length > 0 && data.activeId === null
                 ? React.createElement('p', { style: styles.error }, t('noKeysHint'))
                 : null,
             ),
+            keys.length > 0
+              ? React.createElement(StrategyCard, {
+                  t, data, strategy, setStrategy, busy,
+                  onSave: (patch, invalidMessage) => {
+                    if (!patch) {
+                      setNotice({ ok: false, text: `${t('saveFailed')}: ${invalidMessage}` });
+                      return;
+                    }
+                    onSetStrategy(patch);
+                  },
+                })
+              : null,
             keys.length === 0 && takeover !== 'waiting'
               ? React.createElement('div', { style: styles.banner },
                 React.createElement('p', { style: { margin: 0, fontWeight: 600 } }, t('noKeysTitle')),
@@ -581,7 +693,7 @@ window.__ModuleLoader__.load({
                 disabled: busy !== null,
                 onClick: () => setDraft(keys.map(k => ({ id: k.id, label: k.label, apiKeyEnv: k.apiKeyEnv, secret: '' }))),
               }, t('manageTitle'))
-              : React.createElement(Editor, { draft, setDraft, t, busy, onSave: onSaveKeys }),
+              : React.createElement(Editor, { draft, setDraft, t, busy, onSave: onSaveKeys, existingKeys: keys }),
             notice
               ? React.createElement('p', { style: { ...styles.notice, ...(notice.ok ? styles.noticeOk : styles.noticeErr) } }, notice.text)
               : null,

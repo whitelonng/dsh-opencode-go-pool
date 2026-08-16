@@ -246,3 +246,25 @@ test('putKeySecret stores the literal through the credentials seam, never into s
   await assert.rejects(() => plugin.putKeySecret('acc-a', '   '), /non-empty secret/)
   await root.fiber.dispose()
 })
+
+
+test('putConfig updates the switching thresholds through the settings seam', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, LlmRuntime, MemorySettings, OpenCodeGoPool } = harness
+
+  const root = new Context()
+  await root.plugin(LlmRuntime)
+  new MemorySettings(root)
+  root.provide('credentials', { resolve: async () => undefined })
+  await root.plugin(OpenCodeGoPool, { keys: TWO_KEYS })
+  const plugin = root.get('opencodePool')
+
+  await plugin.putConfig({ preemptAtPercent: 80, switchAfterConsecutiveFailures: 3 })
+  const status = await plugin.status()
+  assert.equal(status.preemptAtPercent, 80)
+  assert.equal(status.switchAfterConsecutiveFailures, 3)
+  await assert.rejects(() => plugin.putConfig({ preemptAtPercent: 250 }), /0\.\.100/)
+  await assert.rejects(() => plugin.putConfig({}), /no known fields/)
+  await root.fiber.dispose()
+})

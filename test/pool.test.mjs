@@ -139,6 +139,42 @@ test('state file round-trips across a fresh pool instance', () => {
   assert.ok(readFileSync(stateFile, 'utf8').includes('"version": 1'))
 })
 
+test('consecutive transient failures rotate away once the threshold trips', () => {
+  const pool = freshPool()
+  pool.setConsecutiveThreshold(2)
+  pool.syncKeys(KEYS)
+  // First transient failure: no rotation.
+  assert.equal(pool.onFailure('acc-a', { code: 'RATE_LIMIT', message: 'slow' }), null)
+  assert.equal(pool.currentKey().id, 'acc-a')
+  assert.equal(pool.stateOf('acc-a').state, 'healthy')
+  // Second consecutive failure: rotate, key stays healthy.
+  const rotation = pool.onFailure('acc-a', { code: 'RATE_LIMIT', message: 'slow' })
+  assert.deepEqual(rotation, { from: 'acc-a', to: 'acc-b' })
+  assert.equal(pool.stateOf('acc-a').state, 'healthy')
+  assert.equal(pool.pool ?? undefined, undefined)
+  assert.equal(pool.lastSwitch.reason, 'consecutive')
+  assert.equal(pool.currentKey().id, 'acc-b')
+})
+
+test('a success resets the transient-failure streak', () => {
+  const pool = freshPool()
+  pool.setConsecutiveThreshold(2)
+  pool.syncKeys(KEYS)
+  pool.onFailure('acc-a', { code: 'RATE_LIMIT', message: 'slow' })
+  pool.onSuccess('acc-a')
+  // Streak cleared: the next single failure must not rotate.
+  assert.equal(pool.onFailure('acc-a', { code: 'RATE_LIMIT', message: 'slow' }), null)
+  assert.equal(pool.currentKey().id, 'acc-a')
+})
+
+test('a single usable key never rotates to itself on consecutive failures', () => {
+  const pool = freshPool()
+  pool.setConsecutiveThreshold(1)
+  pool.syncKeys([KEYS[0]])
+  assert.equal(pool.onFailure('acc-a', { code: 'TIMEOUT', message: 'late' }), null)
+  assert.equal(pool.currentKey().id, 'acc-a')
+})
+
 test('corrupt state file starts fresh', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-opencode-go-pool-'))
   const stateFile = join(dir, 'pool.state.json')

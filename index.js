@@ -65,6 +65,9 @@ export const Config = z.object({
   route: z.union([DEFAULT_ROUTE, ALT_ROUTE]).default(DEFAULT_ROUTE),
   keys: z.array(keyEntry).default([]),
   preemptAtPercent: z.number().min(0).max(100).default(100),
+  // Consecutive non-quota failures (rate limit / server / timeout) after
+  // which the pool rotates away from a key; 0 disables the rule.
+  switchAfterConsecutiveFailures: z.number().min(0).max(20).default(0),
   usageBaseUrl: z.string().default(DEFAULT_USAGE_BASE_URL),
   usageRefreshMs: z.number().min(5000).max(300000).default(DEFAULT_USAGE_REFRESH_MS),
   timeoutMs: z.number().min(1000).max(120000).default(DEFAULT_TIMEOUT_MS),
@@ -171,12 +174,15 @@ class OpenCodeGoPoolAdapter extends LlmAdapter {
       try {
         for await (const chunk of inner.stream(options)) {
           if (chunk.type === 'finish') {
-            if (chunk.reason.kind === 'error' && isRotationFailure(chunk.reason.failure)) {
-              pool.onFailure(entry.id, chunk.reason.failure)
-              // Silent failover only before any content: retry with the next
-              // key. `continue` here must restart the OUTER attempt loop, so
-              // it breaks the inner for-await first.
-              silentRetry = !emitted
+            if (chunk.reason.kind === 'error') {
+              // quota/auth codes rotate the pool; other codes count the
+              // transient-failure streak and rotate once the configured
+              // consecutive-failure threshold trips. Either rotation can
+              // trigger a silent retry while no content was emitted.
+              const rotation = pool.onFailure(entry.id, chunk.reason.failure)
+              if (rotation !== null) silentRetry = !emitted
+            } else if (chunk.reason.kind !== 'aborted') {
+              pool.onSuccess(entry.id)
             }
             finish = chunk
             break
@@ -186,9 +192,13 @@ class OpenCodeGoPoolAdapter extends LlmAdapter {
         }
       } catch (error) {
         const failure = failureOf(error)
-        if (failure && isRotationFailure(failure) && !emitted) {
-          pool.onFailure(entry.id, failure)
-          silentRetry = true
+        if (failure) {
+          const rotation = pool.onFailure(entry.id, failure)
+          if (rotation !== null && !emitted) {
+            silentRetry = true
+          } else {
+            throw error
+          }
         } else {
           throw error
         }
@@ -250,6 +260,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
   applyConfig() {
     const cfg = this.current()
     this.pool.setPreempt(cfg.preemptAtPercent)
+    this.pool.setConsecutiveThreshold(cfg.switchAfterConsecutiveFailures)
     this.pool.syncKeys(cfg.keys)
 
     if (this.profileRoute !== cfg.route) {
@@ -364,6 +375,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
       route: this.servingRoute ?? cfg.route,
       usageRefreshMs: cfg.usageRefreshMs,
       preemptAtPercent: cfg.preemptAtPercent,
+      switchAfterConsecutiveFailures: cfg.switchAfterConsecutiveFailures,
       activeId: this.pool.activeId,
       lastSwitch: this.pool.lastSwitch,
       takeoverHint: this.servingRoute ? null : this.lastTakeoverError,
@@ -429,6 +441,25 @@ export class OpenCodeGoPool extends TypertRemoteService {
     // A freshly supplied secret may repair an invalid-marked key.
     this.pool.clearInvalid(id)
     this.usageCache.invalidate(id)
+    return true
+  }
+
+  /** Update the card-visible pool settings (thresholds only, never keys). */
+  async putConfig(config) {
+    if (!config || typeof config !== 'object') throw new Error('putConfig needs an object')
+    const patch = {}
+    if (config.preemptAtPercent !== undefined) {
+      const value = Number(config.preemptAtPercent)
+      if (!Number.isFinite(value) || value < 0 || value > 100) throw new Error('preemptAtPercent must be 0..100')
+      patch.preemptAtPercent = value
+    }
+    if (config.switchAfterConsecutiveFailures !== undefined) {
+      const value = Number(config.switchAfterConsecutiveFailures)
+      if (!Number.isFinite(value) || value < 0 || value > 20) throw new Error('switchAfterConsecutiveFailures must be 0..20')
+      patch.switchAfterConsecutiveFailures = value
+    }
+    if (Object.keys(patch).length === 0) throw new Error('putConfig received no known fields')
+    await this.scope.update(patch)
     return true
   }
 
