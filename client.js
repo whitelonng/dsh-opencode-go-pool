@@ -95,6 +95,13 @@ window.__ModuleLoader__.load({
       perKey: '每 Key',
       preemptNote: '预切换阈值',
       preemptOff: '失败才切',
+      modelTitle: '模型选择',
+      modelHint: '控制哪些模型出现在对话的模型下拉里；未勾选的模型不可发起请求。「全部模型」始终跟随官方目录，新模型自动可用。',
+      allModels: '全部模型（跟随官方目录）',
+      modelCount: '已启用 {n} 个模型',
+      modelNone: '未选择任何模型：该供应商暂时不可用',
+      modelUnavailable: '模型目录暂不可用，稍后刷新重试',
+      modelEmptyHint: '自定义选择至少需要勾选一个模型',
     };
     const en = {
       nav: 'OpenCode Go Pool',
@@ -174,6 +181,13 @@ window.__ModuleLoader__.load({
       perKey: 'per key',
       preemptNote: 'preempt threshold',
       preemptOff: 'fail-only',
+      modelTitle: 'Model selection',
+      modelHint: 'Controls which models appear in the chat model dropdown; unchecked models cannot be used. “All models” always follows the official catalog — new models become available automatically.',
+      allModels: 'All models (follow the catalog)',
+      modelCount: '{n} models enabled',
+      modelNone: 'No model selected: the provider is temporarily unusable',
+      modelUnavailable: 'Model catalog unavailable — try refreshing later',
+      modelEmptyHint: 'Custom selection needs at least one model',
     };
 
     // Client-side Remote contribution. The result codecs are pass-through
@@ -535,6 +549,95 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * Model selection: which catalog models the pool route exposes. A master
+     * "all models" switch plus per-model checkboxes; saving writes through
+     * putConfig({ modelMode, models }).
+     */
+    function ModelCard(props) {
+      const { t, data, sel, setSel, busy, onSave } = props;
+      const available = Array.isArray(data && data.availableModels) ? data.availableModels : [];
+      const value = sel !== null
+        ? sel
+        : {
+          mode: (data && data.modelMode) || 'all',
+          ids: available.filter(m => m.enabled).map(m => m.id),
+        };
+      const enabledCount = available.filter(m => value.mode === 'all' || value.ids.includes(m.id)).length;
+      const checkStyle = {
+        width: 15, height: 15, margin: 0, flex: 'none', cursor: 'pointer',
+        accentColor: 'var(--dsw-alias-state-business-primary)',
+      };
+      const modelRow = { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' };
+      const save = () => {
+        if (value.mode === 'custom' && value.ids.length === 0) {
+          onSave(null, t('modelEmptyHint'));
+          return;
+        }
+        onSave({ modelMode: value.mode, models: value.mode === 'all' ? [] : value.ids });
+      };
+      return React.createElement('div', { style: styles.card },
+        React.createElement('div', { style: styles.cardHead },
+          React.createElement('div', null,
+            React.createElement('h3', { style: styles.cardName }, t('modelTitle')),
+            React.createElement('p', { style: styles.cardMeta }, t('modelHint')),
+          ),
+          React.createElement('span', { style: { ...styles.badge, color: 'var(--dsw-alias-label-secondary)', borderColor: 'var(--dsw-alias-border-l2)' } },
+            t('modelCount').replace('{n}', String(enabledCount))),
+        ),
+        available.length === 0
+          ? React.createElement('p', { style: styles.hint }, t('modelUnavailable'))
+          : React.createElement(React.Fragment, null,
+            React.createElement('label', { style: modelRow },
+              React.createElement('input', {
+                type: 'checkbox',
+                style: checkStyle,
+                checked: value.mode === 'all',
+                disabled: busy !== null,
+                onChange: event => setSel({
+                  mode: event.target.checked ? 'all' : 'custom',
+                  ids: available.map(m => m.id),
+                }),
+              }),
+              React.createElement('span', null, t('allModels')),
+            ),
+            available.map(m => React.createElement('label', {
+              key: m.id,
+              style: {
+                ...modelRow,
+                paddingLeft: 24,
+                color: value.mode === 'all' ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)',
+              },
+            },
+              React.createElement('input', {
+                type: 'checkbox',
+                style: checkStyle,
+                checked: value.mode === 'all' || value.ids.includes(m.id),
+                disabled: busy !== null || value.mode === 'all',
+                onChange: () => {
+                  const ids = value.ids.includes(m.id)
+                    ? value.ids.filter(id => id !== m.id)
+                    : [...value.ids, m.id];
+                  setSel({ mode: 'custom', ids });
+                },
+              }),
+              React.createElement('span', { style: { fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, m.name),
+              React.createElement('span', { style: { opacity: 0.65, fontSize: 12 } }, m.id),
+            )),
+            enabledCount === 0
+              ? React.createElement('p', { style: styles.error }, t('modelNone'))
+              : null,
+            React.createElement('div', { style: styles.actions },
+              React.createElement('button', {
+                style: { ...styles.button, ...styles.buttonPrimary, ...(busy !== null ? styles.buttonDisabled : {}) },
+                disabled: busy !== null,
+                onClick: save,
+              }, t('save')),
+            ),
+          ),
+      );
+    }
+
     function PoolPage(props) {
       const { t, api } = props;
       const [data, setData] = React.useState(null);
@@ -546,6 +649,7 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = React.useState(null);
       const [draft, setDraft] = React.useState(null);
       const [strategy, setStrategy] = React.useState(null);
+      const [modelSel, setModelSel] = React.useState(null);
       const [refreshing, setRefreshing] = React.useState(false);
       const [loadedAt, setLoadedAt] = React.useState(null);
 
@@ -639,6 +743,14 @@ window.__ModuleLoader__.load({
           });
       };
 
+      const onSetModels = (patch) => {
+        runAction(async remote => remote.putConfig(patch), null)
+          .then(() => {
+            setModelSel(null); // re-derive the checkboxes from the server values
+            setNotice(prev => prev && !prev.ok ? prev : { ok: true, text: t('saved') });
+          });
+      };
+
       const takeover = data ? data.takeover : null;
       const keys = Array.isArray(data && data.keys) ? data.keys : [];
 
@@ -683,6 +795,16 @@ window.__ModuleLoader__.load({
                 ? React.createElement('p', { style: styles.error }, t('noKeysHint'))
                 : null,
             ),
+            React.createElement(ModelCard, {
+              t, data, sel: modelSel, setSel: setModelSel, busy,
+              onSave: (patch, invalidMessage) => {
+                if (!patch) {
+                  setNotice({ ok: false, text: `${t('saveFailed')}: ${invalidMessage}` });
+                  return;
+                }
+                onSetModels(patch);
+              },
+            }),
             keys.length > 0
               ? React.createElement(StrategyCard, {
                   t, data, strategy, setStrategy, busy,
@@ -829,7 +951,7 @@ window.__ModuleLoader__.load({
     exports.apply = apply;
     exports.inject = inject;
     // Render-path test hooks (unused by the runtime; see test/client.test.mjs).
-    exports.__test = { KeyCard, UsageBar, badgeFor, fmtReset, usageErrorText, PoolPage, GoMark, TYPERT_REMOTE, unwrapRemote };
+    exports.__test = { KeyCard, UsageBar, badgeFor, fmtReset, usageErrorText, PoolPage, ModelCard, GoMark, TYPERT_REMOTE, unwrapRemote };
     return module.exports;
   }
 });

@@ -268,3 +268,46 @@ test('putConfig updates the switching thresholds through the settings seam', asy
   await assert.rejects(() => plugin.putConfig({}), /no known fields/)
   await root.fiber.dispose()
 })
+
+test('model selection filters the catalog and gates disabled models through the real seams', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, LlmRuntime, MemorySettings, OpenCodeGoPool } = harness
+  const { root, llm, plugin } = await bootReal(Context, LlmRuntime, MemorySettings, OpenCodeGoPool)
+
+  // Default: 'all' mode exposes the whole catalog to the picker and status.
+  let status = await plugin.status()
+  assert.equal(status.modelMode, 'all')
+  assert.ok(status.availableModels.length >= 2, 'catalog present in the card data')
+  assert.ok(status.availableModels.every(m => m.enabled), 'all models enabled by default')
+
+  // Custom selection: only the chosen model survives everywhere.
+  await plugin.putConfig({ modelMode: 'custom', models: ['deepseek-v4-pro', 'deepseek-v4-pro'] })
+  status = await plugin.status()
+  assert.equal(status.modelMode, 'custom')
+  assert.deepEqual(
+    status.availableModels.filter(m => m.enabled).map(m => m.id),
+    ['deepseek-v4-pro'],
+    'status dedupes and reports only the selected model as enabled',
+  )
+
+  const models = await llm.listModels('opencode-go')
+  assert.deepEqual(models.map(m => m.id), ['deepseek-v4-pro'], 'model dropdown sees only the selected model')
+
+  await assert.rejects(
+    () => plugin.poolAdapter.resolveModel('opencode-go', 'glm-5.2'),
+    err => err && err.code === 'UNKNOWN_MODEL',
+    'a disabled model is refused with UNKNOWN_MODEL',
+  )
+
+  // Back to 'all' restores the complete catalog.
+  await plugin.putConfig({ modelMode: 'all' })
+  const allAgain = await llm.listModels('opencode-go')
+  assert.ok(allAgain.map(m => m.id).includes('glm-5.2'), 'all-mode restores the full catalog')
+
+  // Validation: an empty custom selection and a bogus mode are refused.
+  await assert.rejects(() => plugin.putConfig({ modelMode: 'custom', models: [] }), /at least one model/)
+  await assert.rejects(() => plugin.putConfig({ modelMode: 'none' }), /"all" or "custom"/)
+  await assert.rejects(() => plugin.putConfig({ models: ['ok', 42] }), /non-empty model ids/)
+  await root.fiber.dispose()
+})

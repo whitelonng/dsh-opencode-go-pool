@@ -55,6 +55,12 @@ const poolStatusSchema = z.object({
   usageRefreshMs: z.number(),
   preemptAtPercent: z.number(),
   switchAfterConsecutiveFailures: z.number(),
+  modelMode: z.string(),
+  availableModels: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    enabled: z.boolean(),
+  })),
   activeId: z.string().nullable(),
   lastSwitch: lastSwitchSchema.nullable(),
   takeoverHint: z.string().nullable(),
@@ -104,6 +110,8 @@ export const TYPERT = {
       { name: 'config', wire: 'config', typeSymbol: 'dsh-opencode-go-pool#PoolConfigPatch', schema: z.object({
         preemptAtPercent: z.number().optional(),
         switchAfterConsecutiveFailures: z.number().optional(),
+        modelMode: z.string().optional(),
+        models: z.array(z.string()).optional(),
       }) },
     ], strict('boolean', z.boolean())),
     invocation('putKeySecret', [

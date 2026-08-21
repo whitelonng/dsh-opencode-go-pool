@@ -17,6 +17,8 @@
  *      re-attempts registration on every `llm/adapters-updated` commit.
  *   4. Answers the card: per-key usage from the official OpenCode Go usage
  *      endpoint, plus switch/disable/clear actions.
+ *   5. Model selection: the card picks which catalog models the route
+ *      exposes (listModels filters; resolveModel/stream gate the rest).
  *
  * @module dsh-opencode-go-pool
  */
@@ -68,6 +70,10 @@ export const Config = z.object({
   // Consecutive non-quota failures (rate limit / server / timeout) after
   // which the pool rotates away from a key; 0 disables the rule.
   switchAfterConsecutiveFailures: z.number().min(0).max(20).default(0),
+  // Which models the pool route exposes. 'all' follows the official catalog
+  // (new models appear automatically); 'custom' exposes exactly `models`.
+  modelMode: z.union(['all', 'custom']).default('all'),
+  models: z.array(z.string()).default([]),
   usageBaseUrl: z.string().default(DEFAULT_USAGE_BASE_URL),
   usageRefreshMs: z.number().min(5000).max(300000).default(DEFAULT_USAGE_REFRESH_MS),
   timeoutMs: z.number().min(1000).max(120000).default(DEFAULT_TIMEOUT_MS),
@@ -150,15 +156,32 @@ class OpenCodeGoPoolAdapter extends LlmAdapter {
     }, 'opencode-go-pool.retryPolicy')
   }
 
-  listModels(provider) {
-    return this.plugin.innerCatalog.listModels(provider)
+  async listModels(provider) {
+    const list = await this.plugin.innerCatalog.listModels(provider)
+    const selection = this.plugin.modelSelection()
+    if (selection === null) return list
+    return list.filter(entry => selection.has(entry.id))
   }
 
-  resolveModel(provider, model, signal) {
+  async resolveModel(provider, model, signal) {
+    const selection = this.plugin.modelSelection()
+    if (selection !== null && !selection.has(model)) {
+      throw new LlmError(
+        `model "${model}" is not enabled in the OpenCode Go pool model selection (Settings → OpenCode Go 套餐池 → 模型选择)`,
+        'UNKNOWN_MODEL',
+      )
+    }
     return this.plugin.innerCatalog.resolveModel(provider, model, signal)
   }
 
   async *stream(options) {
+    const selection = this.plugin.modelSelection()
+    if (selection !== null && options.model && !selection.has(options.model)) {
+      throw new LlmError(
+        `model "${options.model}" is not enabled in the OpenCode Go pool model selection (Settings → OpenCode Go 套餐池 → 模型选择)`,
+        'UNKNOWN_MODEL',
+      )
+    }
     const pool = this.plugin.pool
     const attempts = pool.usableCount() + 1
     for (let attempt = 0; attempt < attempts; attempt++) {
@@ -246,6 +269,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
     this.registration = null
     this.servingRoute = null
     this.lastTakeoverError = null
+    this.lastModelSelection = null
 
     this.applyConfig()
     this.scope.watch(() => this.applyConfig())
@@ -276,8 +300,45 @@ export class OpenCodeGoPool extends TypertRemoteService {
     }
     if (!this.poolAdapter) this.poolAdapter = new OpenCodeGoPoolAdapter(this)
 
-    if (this.servingRoute === cfg.route) return
+    const selection = this.modelSelectionKey(cfg)
+    if (this.servingRoute === cfg.route) {
+      // The model selection changed without a route change: re-announce the
+      // route so model pickers refresh their catalog from the filtered
+      // listModels(). Settings docs that predate the field read as 'all'.
+      if (this.lastModelSelection !== null && this.lastModelSelection !== selection) {
+        this.announceAdapterChange()
+      }
+      this.lastModelSelection = selection
+      return
+    }
+    this.lastModelSelection = selection
     this.tryRegister()
+  }
+
+  /** A stable key for the enabled-model selection (null = all models). */
+  modelSelectionKey(cfg) {
+    return JSON.stringify([cfg.modelMode ?? 'all', [...(cfg.models ?? [])].sort()])
+  }
+
+  /**
+   * The enabled-model filter: null = the whole catalog, otherwise the Set of
+   * explicitly selected ids. Tolerates undefined fields from pre-feature
+   * settings documents.
+   */
+  modelSelection() {
+    const cfg = this.current()
+    if (cfg.modelMode !== 'custom' || !Array.isArray(cfg.models) || cfg.models.length === 0) return null
+    return new Set(cfg.models)
+  }
+
+  /** Re-announce the current route so adapters-updated listeners refresh catalogs. */
+  announceAdapterChange() {
+    if (this.registration === null || this.servingRoute === null) return
+    try {
+      this.registration.replace([this.servingRoute])
+    } catch (error) {
+      this.logger?.warn?.(`[opencode-go-pool] catalog re-announce failed: ${String((error && error.message) || error)}`)
+    }
   }
 
   /**
@@ -345,10 +406,28 @@ export class OpenCodeGoPool extends TypertRemoteService {
 
   // ---- Typert Remote surface (the card) -------------------------------------
 
+  /** The card-facing model selector data: catalog entries plus enabled flags. */
+  async listAvailableModels(cfg) {
+    const route = this.profileRoute ?? cfg.route
+    let catalog = []
+    try {
+      if (this.innerCatalog) catalog = await this.innerCatalog.listModels(route)
+    } catch {
+      catalog = []
+    }
+    const selection = cfg.modelMode === 'custom' && Array.isArray(cfg.models) ? new Set(cfg.models) : null
+    return catalog.map(entry => ({
+      id: entry.id,
+      name: entry.name ?? entry.id,
+      enabled: selection === null || selection.has(entry.id),
+    }))
+  }
+
   async status() {
     const cfg = this.current()
     const fetchedAt = new Date().toISOString()
     const entries = this.pool.entries()
+    const availableModels = await this.listAvailableModels(cfg)
     const usageResults = await Promise.all(entries.map(async entry => {
       try {
         const key = await this.resolveKeyValue(entry)
@@ -376,6 +455,8 @@ export class OpenCodeGoPool extends TypertRemoteService {
       usageRefreshMs: cfg.usageRefreshMs,
       preemptAtPercent: cfg.preemptAtPercent,
       switchAfterConsecutiveFailures: cfg.switchAfterConsecutiveFailures,
+      modelMode: cfg.modelMode ?? 'all',
+      availableModels,
       activeId: this.pool.activeId,
       lastSwitch: this.pool.lastSwitch,
       takeoverHint: this.servingRoute ? null : this.lastTakeoverError,
@@ -458,7 +539,21 @@ export class OpenCodeGoPool extends TypertRemoteService {
       if (!Number.isFinite(value) || value < 0 || value > 20) throw new Error('switchAfterConsecutiveFailures must be 0..20')
       patch.switchAfterConsecutiveFailures = value
     }
+    if (config.modelMode !== undefined) {
+      if (config.modelMode !== 'all' && config.modelMode !== 'custom') throw new Error('modelMode must be "all" or "custom"')
+      patch.modelMode = config.modelMode
+    }
+    if (config.models !== undefined) {
+      if (!Array.isArray(config.models) || config.models.some(id => typeof id !== 'string' || id.trim().length === 0)) {
+        throw new Error('models must be an array of non-empty model ids')
+      }
+      patch.models = [...new Set(config.models.map(id => id.trim()))]
+    }
     if (Object.keys(patch).length === 0) throw new Error('putConfig received no known fields')
+    const effective = { ...this.current(), ...patch }
+    if (effective.modelMode === 'custom' && (!Array.isArray(effective.models) || effective.models.length === 0)) {
+      throw new Error('custom model selection needs at least one model — pick models or use modelMode "all"')
+    }
     await this.scope.update(patch)
     return true
   }

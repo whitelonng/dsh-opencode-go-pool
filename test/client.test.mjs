@@ -192,6 +192,40 @@ test('KeyCard renders failure badges and error text without usage data', async (
   assert.ok(html.includes('disable'), 'offers disable')
 })
 
+test('ModelCard renders the master switch, per-model checkboxes, and the enabled count', async (t) => {
+  const harness = await loadReact(t)
+  if (!harness) return
+  const { React, renderToString } = harness
+  const spec = await loadClientBundle(t)
+  const module = spec.factory(name => (name === 'react' ? React : (() => { throw new Error(name) })()))
+  const { ModelCard } = module.__test
+
+  const data = {
+    modelMode: 'custom',
+    availableModels: [
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', enabled: true },
+      { id: 'glm-5.2', name: 'GLM-5.2', enabled: false },
+    ],
+  }
+  const html = renderToString(React.createElement(ModelCard, {
+    t: key => key, data, sel: null, setSel: () => {}, busy: null, onSave: () => {},
+  }))
+  assert.ok(html.includes('modelTitle'), 'renders the card title')
+  assert.ok(html.includes('allModels'), 'renders the master all-models switch')
+  assert.ok(html.includes('DeepSeek V4 Pro') && html.includes('glm-5.2'), 'lists the catalog models')
+  assert.ok(html.includes('modelCount'), 'renders the enabled-count badge')
+  assert.equal((html.match(/checked/g) || []).length, 1, 'only the enabled model is checked')
+
+  // All-mode: master and every per-model checkbox render checked + locked.
+  const allHtml = renderToString(React.createElement(ModelCard, {
+    t: key => key, data,
+    sel: { mode: 'all', ids: ['deepseek-v4-pro', 'glm-5.2'] },
+    setSel: () => {}, busy: null, onSave: () => {},
+  }))
+  assert.equal((allHtml.match(/checked/g) || []).length, 3, 'master plus both models checked in all-mode')
+  assert.ok(allHtml.includes('disabled'), 'per-model checkboxes are locked in all-mode')
+})
+
 test('the bundle exposes no literal secrets anywhere', async () => {
   const source = readFileSync(join(here, '..', 'client.js'), 'utf8')
   assert.ok(!/sk-opencode-[A-Za-z0-9]+/.test(source), 'no literal OpenCode keys in the bundle')
