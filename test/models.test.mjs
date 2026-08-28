@@ -119,3 +119,32 @@ test('saveDynamicModels / loadDynamicModels round-trip and degrade gracefully', 
   // Sanity: the round-trip wrote parseable JSON.
   assert.ok(JSON.parse(readFileSync(path, 'utf8')).length === 1)
 })
+
+test('dynamicModelDescriptor ships a zero-cost block so pi-ai cost accounting cannot crash', async (t) => {
+  // Regression for the PI_AI_ERROR round failure: a synthesized descriptor
+  // without `cost` made pi-ai's calculateCost() throw
+  // "Cannot read properties of undefined (reading 'tiers')" at the end of
+  // every streamed conversation, because it iterates `model.cost.tiers`.
+  const descriptor = dynamicModelDescriptor('brand-new-2.5', 'Brand New 2.5', 'opencode-go')
+  assert.ok(descriptor.cost, 'descriptor carries a cost block')
+  for (const field of ['input', 'output', 'cacheRead', 'cacheWrite']) {
+    assert.equal(typeof descriptor.cost[field], 'number', `cost.${field} is numeric`)
+  }
+  assert.ok(!('tiers' in descriptor.cost), 'no tiers: unknown pricing stays a flat zero')
+
+  // When the harness peers are linked, prove the real pi-ai pipeline accepts
+  // the descriptor end-to-end (the exact code path that used to crash).
+  let calculateCost
+  try {
+    ;({ calculateCost } = await import('@earendil-works/pi-ai'))
+  } catch {
+    t.skip('pi-ai peer not installed — link the DSH node_modules to run this assertion')
+    return
+  }
+  const usage = {
+    input: 123, output: 45, cacheRead: 10, cacheWrite: 2,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  }
+  const cost = calculateCost(descriptor, usage)
+  assert.equal(cost.total, 0, 'unknown pricing costs zero without throwing')
+})

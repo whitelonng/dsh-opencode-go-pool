@@ -121,6 +121,13 @@ export function dynamicModelDescriptor(id, name, route) {
     api: DEFAULT_API,
     baseUrl: DEFAULT_BASE_URL,
     input: ['text'],
+    // Supplier-new models have no published per-token pricing. Cost them at
+    // zero instead of omitting `cost`: the pi-ai usage pipeline calls
+    // calculateCost() on every completed stream, and it iterates
+    // `model.cost.tiers` — a descriptor without a cost block crashes the
+    // whole round with "Cannot read properties of undefined (reading 'tiers')"
+    // (PI_AI_ERROR). Regression: test/models.test.mjs.
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     // Mirror deepseek-v4-pro: getSupportedThinkingLevels() yields
     // [off, high, max], and the deepseek thinking format serializes
     // thinking + reasoning_effort on the wire.
