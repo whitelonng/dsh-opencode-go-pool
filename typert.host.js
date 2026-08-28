@@ -49,6 +49,16 @@ const lastSwitchSchema = z.object({
   at: z.string(),
 })
 
+const refreshModelsResultSchema = z.object({
+  count: z.number(),
+  models: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+  })),
+  added: z.array(z.string()),
+  fetchedAt: z.string(),
+})
+
 const poolStatusSchema = z.object({
   takeover: z.string(),
   route: z.string(),
@@ -60,6 +70,7 @@ const poolStatusSchema = z.object({
     id: z.string(),
     name: z.string(),
     enabled: z.boolean(),
+    dynamic: z.boolean(),
   })),
   activeId: z.string().nullable(),
   lastSwitch: lastSwitchSchema.nullable(),
@@ -119,6 +130,7 @@ export const TYPERT = {
       { name: 'secret', wire: 'secret', typeSymbol: 'string', schema: z.string() },
     ], strict('boolean', z.boolean())),
     invocation('takeOverState', [], strict('string', z.string())),
+    invocation('refreshModels', [], strict('dsh-opencode-go-pool#RefreshModelsResult', refreshModelsResultSchema)),
   ],
   model: { services: [], events: [], objects: [] },
 }

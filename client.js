@@ -102,6 +102,14 @@ window.__ModuleLoader__.load({
       modelNone: '未选择任何模型：该供应商暂时不可用',
       modelUnavailable: '模型目录暂不可用，稍后刷新重试',
       modelEmptyHint: '自定义选择至少需要勾选一个模型',
+      modelFetch: '拉取模型',
+      modelFetching: '拉取中…',
+      modelFetched: '已获取 {count} 个模型，新增 {added} 个',
+      modelFetchFailed: '拉取模型失败',
+      modelFetchHint: '从官方 models 接口拉取最新模型；目录里还没有的新模型会按默认协议接入，勾选后即可尝试使用',
+      modelExpand: '展开',
+      modelCollapse: '收起',
+      dynamicTag: '动态',
     };
     const en = {
       nav: 'OpenCode Go Pool',
@@ -188,7 +196,28 @@ window.__ModuleLoader__.load({
       modelNone: 'No model selected: the provider is temporarily unusable',
       modelUnavailable: 'Model catalog unavailable — try refreshing later',
       modelEmptyHint: 'Custom selection needs at least one model',
+      modelFetch: 'Fetch models',
+      modelFetching: 'Fetching…',
+      modelFetched: 'Fetched {count} models, {added} new',
+      modelFetchFailed: 'Failed to fetch models',
+      modelFetchHint: 'Pull the latest models from the official models endpoint; new models are wired up with a default protocol and become usable once checked',
+      modelExpand: 'Expand',
+      modelCollapse: 'Collapse',
+      dynamicTag: 'dynamic',
     };
+
+    /** Dynamic-model tag: marks a model pulled from the endpoint (not shipped
+     * in the pi-ai catalog), so a best-effort protocol guess is visible. */
+    function DynamicTag({ t }) {
+      return React.createElement('span', {
+        style: {
+          fontSize: 10, borderRadius: 999, padding: '1px 7px',
+          color: 'var(--dsw-alias-state-warning-primary, #d97706)',
+          border: '1px solid var(--dsw-alias-state-warning-primary, #d97706)',
+          whiteSpace: 'nowrap',
+        },
+      }, t('dynamicTag'));
+    }
 
     // Client-side Remote contribution. The result codecs are pass-through
     // parsers: the Host validates business results against its own zod schemas
@@ -219,6 +248,7 @@ window.__ModuleLoader__.load({
         DESCRIPTOR('putKeySecret', ['id', 'secret']),
         DESCRIPTOR('putConfig', ['config']),
         DESCRIPTOR('takeOverState', []),
+        DESCRIPTOR('refreshModels', []),
       ],
     };
 
@@ -550,12 +580,15 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Model selection: which catalog models the pool route exposes. A master
-     * "all models" switch plus per-model checkboxes; saving writes through
-     * putConfig({ modelMode, models }).
+     * Model selection: which catalog models the pool route exposes. The card
+     * is a collapsed header by default (so the key pool below stays in view);
+     * expanding reveals a master "all models" switch, a "fetch models" action
+     * that pulls the supplier's latest lineup, and per-model checkboxes.
+     * Saving writes through putConfig({ modelMode, models }).
      */
     function ModelCard(props) {
-      const { t, data, sel, setSel, busy, onSave } = props;
+      const { t, data, sel, setSel, busy, onSave, onFetchModels, fetching, defaultOpen } = props;
+      const [open, setOpen] = React.useState(defaultOpen === true);
       const available = Array.isArray(data && data.availableModels) ? data.availableModels : [];
       const value = sel !== null
         ? sel
@@ -564,11 +597,15 @@ window.__ModuleLoader__.load({
           ids: available.filter(m => m.enabled).map(m => m.id),
         };
       const enabledCount = available.filter(m => value.mode === 'all' || value.ids.includes(m.id)).length;
+      const dynamicCount = available.filter(m => m.dynamic).length;
+      const counts = dynamicCount > 0
+        ? `${t('modelCount').replace('{n}', String(enabledCount))} · ${t('dynamicTag')}${String(dynamicCount)}`
+        : t('modelCount').replace('{n}', String(enabledCount));
       const checkStyle = {
         width: 15, height: 15, margin: 0, flex: 'none', cursor: 'pointer',
         accentColor: 'var(--dsw-alias-state-business-primary)',
       };
-      const modelRow = { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' };
+      const modelRow = { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', flexWrap: 'wrap' };
       const save = () => {
         if (value.mode === 'custom' && value.ids.length === 0) {
           onSave(null, t('modelEmptyHint'));
@@ -576,65 +613,86 @@ window.__ModuleLoader__.load({
         }
         onSave({ modelMode: value.mode, models: value.mode === 'all' ? [] : value.ids });
       };
+      const headButtons = { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' };
       return React.createElement('div', { style: styles.card },
-        React.createElement('div', { style: styles.cardHead },
-          React.createElement('div', null,
+        React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' } },
+          React.createElement('div', { style: { minWidth: 0 } },
             React.createElement('h3', { style: styles.cardName }, t('modelTitle')),
-            React.createElement('p', { style: styles.cardMeta }, t('modelHint')),
-          ),
-          React.createElement('span', { style: { ...styles.badge, color: 'var(--dsw-alias-label-secondary)', borderColor: 'var(--dsw-alias-border-l2)' } },
-            t('modelCount').replace('{n}', String(enabledCount))),
-        ),
-        available.length === 0
-          ? React.createElement('p', { style: styles.hint }, t('modelUnavailable'))
-          : React.createElement(React.Fragment, null,
-            React.createElement('label', { style: modelRow },
-              React.createElement('input', {
-                type: 'checkbox',
-                style: checkStyle,
-                checked: value.mode === 'all',
-                disabled: busy !== null,
-                onChange: event => setSel({
-                  mode: event.target.checked ? 'all' : 'custom',
-                  ids: available.map(m => m.id),
-                }),
-              }),
-              React.createElement('span', null, t('allModels')),
-            ),
-            available.map(m => React.createElement('label', {
-              key: m.id,
-              style: {
-                ...modelRow,
-                paddingLeft: 24,
-                color: value.mode === 'all' ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)',
-              },
-            },
-              React.createElement('input', {
-                type: 'checkbox',
-                style: checkStyle,
-                checked: value.mode === 'all' || value.ids.includes(m.id),
-                disabled: busy !== null || value.mode === 'all',
-                onChange: () => {
-                  const ids = value.ids.includes(m.id)
-                    ? value.ids.filter(id => id !== m.id)
-                    : [...value.ids, m.id];
-                  setSel({ mode: 'custom', ids });
-                },
-              }),
-              React.createElement('span', { style: { fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, m.name),
-              React.createElement('span', { style: { opacity: 0.65, fontSize: 12 } }, m.id),
-            )),
-            enabledCount === 0
-              ? React.createElement('p', { style: styles.error }, t('modelNone'))
+            open
+              ? React.createElement('p', { style: styles.cardMeta }, t('modelHint'))
               : null,
-            React.createElement('div', { style: styles.actions },
-              React.createElement('button', {
-                style: { ...styles.button, ...styles.buttonPrimary, ...(busy !== null ? styles.buttonDisabled : {}) },
-                disabled: busy !== null,
-                onClick: save,
-              }, t('save')),
-            ),
           ),
+          React.createElement('div', { style: headButtons },
+            React.createElement('span', { style: { ...styles.badge, color: 'var(--dsw-alias-label-secondary)', borderColor: 'var(--dsw-alias-border-l2)' } }, counts),
+            onFetchModels
+              ? React.createElement('button', {
+                style: { ...styles.button, ...(fetching || busy !== null ? styles.buttonDisabled : {}) },
+                disabled: fetching || busy !== null,
+                onClick: onFetchModels,
+              }, fetching ? t('modelFetching') : t('modelFetch'))
+              : null,
+            React.createElement('button', {
+              style: styles.button,
+              onClick: () => setOpen(prev => !prev),
+            }, open ? t('modelCollapse') : t('modelExpand')),
+          ),
+        ),
+        open
+          ? React.createElement(React.Fragment, null,
+            React.createElement('p', { style: styles.hint }, t('modelFetchHint')),
+            available.length === 0
+              ? React.createElement('p', { style: styles.hint }, t('modelUnavailable'))
+              : React.createElement(React.Fragment, null,
+                React.createElement('label', { style: modelRow },
+                  React.createElement('input', {
+                    type: 'checkbox',
+                    style: checkStyle,
+                    checked: value.mode === 'all',
+                    disabled: busy !== null,
+                    onChange: event => setSel({
+                      mode: event.target.checked ? 'all' : 'custom',
+                      ids: available.map(m => m.id),
+                    }),
+                  }),
+                  React.createElement('span', null, t('allModels')),
+                ),
+                available.map(m => React.createElement('label', {
+                  key: m.id,
+                  style: {
+                    ...modelRow,
+                    paddingLeft: 24,
+                    color: value.mode === 'all' ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)',
+                  },
+                },
+                  React.createElement('input', {
+                    type: 'checkbox',
+                    style: checkStyle,
+                    checked: value.mode === 'all' || value.ids.includes(m.id),
+                    disabled: busy !== null || value.mode === 'all',
+                    onChange: () => {
+                      const ids = value.ids.includes(m.id)
+                        ? value.ids.filter(id => id !== m.id)
+                        : [...value.ids, m.id];
+                      setSel({ mode: 'custom', ids });
+                    },
+                  }),
+                  React.createElement('span', { style: { fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, m.name),
+                  React.createElement('span', { style: { opacity: 0.65, fontSize: 12 } }, m.id),
+                  m.dynamic ? React.createElement(DynamicTag, { t }) : null,
+                )),
+                enabledCount === 0
+                  ? React.createElement('p', { style: styles.error }, t('modelNone'))
+                  : null,
+                React.createElement('div', { style: styles.actions },
+                  React.createElement('button', {
+                    style: { ...styles.button, ...styles.buttonPrimary, ...(busy !== null ? styles.buttonDisabled : {}) },
+                    disabled: busy !== null,
+                    onClick: save,
+                  }, t('save')),
+                ),
+              ),
+          )
+          : null,
       );
     }
 
@@ -652,6 +710,7 @@ window.__ModuleLoader__.load({
       const [modelSel, setModelSel] = React.useState(null);
       const [refreshing, setRefreshing] = React.useState(false);
       const [loadedAt, setLoadedAt] = React.useState(null);
+      const [fetching, setFetching] = React.useState(false);
 
       const load = React.useCallback(async () => {
         setRefreshing(true);
@@ -751,6 +810,28 @@ window.__ModuleLoader__.load({
           });
       };
 
+      const onFetchModels = async () => {
+        setFetching(true);
+        setNotice(null);
+        try {
+          const remote = await api();
+          if (!remote) throw new Error('opencodePool remote is unavailable');
+          const result = unwrapRemote(await remote.refreshModels());
+          await load();
+          setModelSel(null); // re-derive the checkboxes from the refreshed catalog
+          setNotice({
+            ok: true,
+            text: t('modelFetched')
+              .replace('{count}', String(result && result.count))
+              .replace('{added}', String(Array.isArray(result && result.added) ? result.added.length : 0)),
+          });
+        } catch (err) {
+          setNotice({ ok: false, text: `${t('modelFetchFailed')}: ${String((err && err.message) || err)}` });
+        } finally {
+          setFetching(false);
+        }
+      };
+
       const takeover = data ? data.takeover : null;
       const keys = Array.isArray(data && data.keys) ? data.keys : [];
 
@@ -797,6 +878,7 @@ window.__ModuleLoader__.load({
             ),
             React.createElement(ModelCard, {
               t, data, sel: modelSel, setSel: setModelSel, busy,
+              onFetchModels, fetching,
               onSave: (patch, invalidMessage) => {
                 if (!patch) {
                   setNotice({ ok: false, text: `${t('saveFailed')}: ${invalidMessage}` });

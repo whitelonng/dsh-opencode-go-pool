@@ -14,7 +14,8 @@ DeepSeek Harness（DSH）插件：**OpenCode Go 套餐的多 Key 池** —— �
 | 🎛 运行态管理 | 卡片内：立即切换、停用/启用、清除失效、新增/删除 Key（写入插件命名空间，带版本栅栏，无需改 yml） |
 | ♻️ 自动复活 | 额度耗尽的 Key 在其 5h 窗口重置后（用量接口报告恢复）自动回到池中 |
 | 🧭 无缝接管 | 接管 `opencode-go` 路由：删除「设置 → 模型」中的 opencode-go 行后自动完成，历史会话与模型选择器完全不变 |
-| 🗂 模型选择 | 卡片内勾选该路由暴露哪些模型：「全部模型」跟随官方目录；自定义时未勾选的模型不出现在聊天模型下拉、也无法发起请求 |
+| 🗂 模型选择 | 卡片内勾选该路由暴露哪些模型：「全部模型」跟随官方目录；自定义时未勾选的模型不出现在聊天模型下拉、也无法发起请求；默认折叠，点「展开」查看 |
+| 📥 拉取最新模型 | 卡片内「拉取模型」从官方 `models` 接口抓取供应商最新模型列表；目录里还没有的新模型即时进入可选列表（按默认协议接入，勾选即可尝试） |
 
 ## 安装
 
@@ -103,6 +104,7 @@ Authorization: Bearer <OpenCode Go API Key>
 | `modelMode` | `all` | `all`=暴露官方目录全部模型（新模型自动可用）；`custom`=仅暴露 `models` 勾选的模型 |
 | `models` | `[]` | `modelMode=custom` 时的模型 id 列表；卡片内「模型选择」勾选后写入 |
 | `usageBaseUrl` | `https://opencode.ai/zen/go/v1/usage` | 用量接口地址 |
+| `modelsBaseUrl` | `https://opencode.ai/zen/go/v1/models` | 「拉取模型」接口地址 |
 | `usageRefreshMs` | `30000` | 卡片轮询间隔（host 侧另有 15s TTL 缓存） |
 | `timeoutMs` | `15000` | 用量请求超时 |
 
@@ -115,7 +117,7 @@ Authorization: Bearer <OpenCode Go API Key>
 
 纯 ESM，零构建步骤：
 
-- Host 半：`index.js`（插件 + 池适配器 + 接管）、`pool.js`（状态机）、`usage.js`（用量网关）、`typert.host.js`（RPC 清单）
+- Host 半：`index.js`（插件 + 池适配器 + 接管）、`pool.js`（状态机）、`usage.js`（用量网关）、`models.js`（模型目录拉取）、`typert.host.js`（RPC 清单）
 - 浏览器半：`client.js`（lazy-CJS bundle，`window.__ModuleLoader__.load` 格式）
 - 测试：`node --test test/*.test.mjs`（38 项：状态机 13、用量网关 7、cordis 烟测 8（接管协议与静默切换端到端）、真实服务集成 5（LlmRuntime 注册表/llm.stream 全链路/settings 写入/接管握手）、客户端 bundle 执行与渲染 5；缺少 harness 依赖时相关测试优雅跳过）
 

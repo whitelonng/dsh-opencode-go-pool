@@ -311,3 +311,30 @@ test('model selection filters the catalog and gates disabled models through the 
   await assert.rejects(() => plugin.putConfig({ models: ['ok', 42] }), /non-empty model ids/)
   await root.fiber.dispose()
 })
+
+test('fetched dynamic models merge into the catalog and resolve end-to-end', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, LlmRuntime, MemorySettings, OpenCodeGoPool } = harness
+  const { root, llm, plugin } = await bootReal(Context, LlmRuntime, MemorySettings, OpenCodeGoPool)
+
+  // A supplier model the shipped catalog does not yet carry, pulled by the
+  // refreshModels action. Mutating the cache exercises the wrapper provider
+  // without any network.
+  plugin.dynamicModels.set('glm-5.3', { id: 'glm-5.3', name: 'GLM-5.3' })
+
+  const ids = (await llm.listModels('opencode-go')).map(m => m.id)
+  assert.ok(ids.includes('glm-5.3'), 'the fetched model appears in the picker catalog')
+
+  const status = await plugin.status()
+  const fetched = status.availableModels.find(m => m.id === 'glm-5.3')
+  assert.ok(fetched, 'the fetched model appears in the card data')
+  assert.equal(fetched.dynamic, true, 'the fetched model is flagged dynamic')
+  assert.equal(fetched.enabled, true, 'all-mode enables the fetched model too')
+
+  // The fetched model resolves (routed with a default protocol) rather than
+  // raising UNKNOWN_MODEL.
+  const resolved = await plugin.poolAdapter.resolveModel('opencode-go', 'glm-5.3')
+  assert.equal(resolved.id, 'glm-5.3')
+  await root.fiber.dispose()
+})

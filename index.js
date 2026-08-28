@@ -40,6 +40,12 @@ import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go'
 import { AUTH_CODE, KeyPool, assertKeyList } from './pool.js'
 import { fetchUsage, UsageCache } from './usage.js'
+import {
+  dynamicModelDescriptor,
+  fetchModels,
+  loadDynamicModels,
+  saveDynamicModels,
+} from './models.js'
 
 export const name = 'opencode-go-pool'
 
@@ -48,6 +54,8 @@ const DISPLAY_NAME = 'OpenCode Zen Go（池）'
 const DEFAULT_ROUTE = 'opencode-go'
 const ALT_ROUTE = 'opencode-go-pool'
 const DEFAULT_USAGE_BASE_URL = 'https://opencode.ai/zen/go/v1/usage'
+const DEFAULT_MODELS_BASE_URL = 'https://opencode.ai/zen/go/v1/models'
+const MODELS_CACHE_FILE = 'opencode-go-pool.models.json'
 const DEFAULT_USAGE_REFRESH_MS = 30000
 const DEFAULT_TIMEOUT_MS = 15000
 const USAGE_CACHE_TTL_MS = 15000
@@ -75,6 +83,7 @@ export const Config = z.object({
   modelMode: z.union(['all', 'custom']).default('all'),
   models: z.array(z.string()).default([]),
   usageBaseUrl: z.string().default(DEFAULT_USAGE_BASE_URL),
+  modelsBaseUrl: z.string().default(DEFAULT_MODELS_BASE_URL),
   usageRefreshMs: z.number().min(5000).max(300000).default(DEFAULT_USAGE_REFRESH_MS),
   timeoutMs: z.number().min(1000).max(120000).default(DEFAULT_TIMEOUT_MS),
 })
@@ -84,10 +93,26 @@ function validateSection(value) {
   assertKeyList(value.keys ?? [])
 }
 
-/** Build the resolved pi-ai profile for the opencode-go catalog route. */
-function buildProfile(route) {
-  const provider = opencodeGoProvider()
-  if (provider.id !== route) provider.id = route
+/**
+ * Build the resolved pi-ai profile for the opencode-go catalog route.
+ *
+ * The catalog provider is wrapped so that models fetched from the official
+ * models endpoint (see refreshModels) are merged into listModels /
+ * resolveModel / stream: pi-ai reads `provider.getModels()` on every call, so
+ * appending freshly pulled descriptors makes new supplier models usable
+ * without a pi-ai package release. Known (shipped) models are never touched.
+ */
+function buildProfile(route, dynamicDescriptors) {
+  const upstream = opencodeGoProvider()
+  if (upstream.id !== route) upstream.id = route
+  const provider = {
+    ...upstream,
+    getModels: () => {
+      const base = upstream.getModels()
+      const extras = dynamicDescriptors(route).filter(descriptor => !base.some(m => m.id === descriptor.id))
+      return extras.length > 0 ? [...base, ...extras] : base
+    },
+  }
   return {
     provider: route,
     displayName: DISPLAY_NAME,
@@ -261,6 +286,13 @@ export class OpenCodeGoPool extends TypertRemoteService {
       reviveThresholdPercent: REVIVE_THRESHOLD_PERCENT,
     })
     this.usageCache = new UsageCache({ ttlMs: USAGE_CACHE_TTL_MS })
+    // Models pulled from the official models endpoint (id → {id, name}).
+    // Loaded from a cache file so a fetched lineup survives restarts.
+    this.dynamicModels = new Map(
+      loadDynamicModels(dshHomePath(MODELS_CACHE_FILE)).map(entry => [entry.id, entry]),
+    )
+    // Injectable fetch for refreshModels; undefined = the host fetch.
+    this.fetchModelsImpl = undefined
 
     this.profileRoute = null
     this.profileMap = null
@@ -289,7 +321,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
 
     if (this.profileRoute !== cfg.route) {
       this.profileRoute = cfg.route
-      this.profileMap = new Map([[cfg.route, buildProfile(cfg.route)]])
+      this.profileMap = new Map([[cfg.route, buildProfile(cfg.route, route => this.dynamicModelDescriptors(route))]])
       this.innerCatalog = new PiAiAdapter({
         profiles: () => this.profileMap,
         resolveApiKey: async () => {
@@ -420,7 +452,72 @@ export class OpenCodeGoPool extends TypertRemoteService {
       id: entry.id,
       name: entry.name ?? entry.id,
       enabled: selection === null || selection.has(entry.id),
+      dynamic: this.dynamicModels.has(entry.id),
     }))
+  }
+
+  /**
+   * Synthesized pi-ai descriptors for the fetched models not present in the
+   * shipped catalog. The wrapper provider appends these to getModels().
+   */
+  dynamicModelDescriptors(route) {
+    return Array.from(this.dynamicModels.values(), ({ id, name }) => dynamicModelDescriptor(id, name, route))
+  }
+
+  /** The static (shipped) catalog ids, for detecting newly-fetched models. */
+  staticModelIds() {
+    try {
+      return new Set(opencodeGoProvider().getModels().map(model => model.id))
+    } catch {
+      return new Set()
+    }
+  }
+
+  /** Persist the fetched-model cache (best-effort). */
+  persistDynamicModels() {
+    saveDynamicModels(dshHomePath(MODELS_CACHE_FILE), Array.from(this.dynamicModels.values()))
+  }
+
+  /**
+   * Pull the latest model lineup from the official models endpoint and merge
+   * it into the catalog. Newly-added models become selectable immediately
+   * (routed with a best-effort default protocol). Returns a summary the card
+   * renders: total fetched, the full list, and the ids that were new.
+   */
+  async refreshModels() {
+    const cfg = this.current()
+    const baseUrl = cfg.modelsBaseUrl || DEFAULT_MODELS_BASE_URL
+    // The endpoint is public, but pass the active key's credential when one is
+    // resolvable (account-specific lineups); a missing key must not block.
+    let apiKey
+    try {
+      const entry = this.pool.currentKey()
+      if (entry) apiKey = await this.resolveKeyValue(entry)
+    } catch {
+      apiKey = undefined
+    }
+    const fetched = await fetchModels({
+      baseUrl,
+      apiKey,
+      timeoutMs: cfg.timeoutMs,
+      fetchImpl: this.fetchModelsImpl,
+    })
+    const known = this.staticModelIds()
+    const before = new Set(this.dynamicModels.keys())
+    const added = []
+    for (const model of fetched) {
+      if (!known.has(model.id) && !before.has(model.id)) added.push(model.id)
+      this.dynamicModels.set(model.id, { id: model.id, name: model.name || model.id })
+    }
+    this.persistDynamicModels()
+    // Refresh any model picker that cached the catalog from listModels().
+    this.announceAdapterChange()
+    return {
+      count: fetched.length,
+      models: fetched.map(model => ({ id: model.id, name: model.name || model.id })),
+      added,
+      fetchedAt: new Date().toISOString(),
+    }
   }
 
   async status() {
