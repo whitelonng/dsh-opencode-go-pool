@@ -103,8 +103,12 @@ export async function fetchModels({ baseUrl, apiKey, timeoutMs = 15000, fetchImp
 
 /**
  * Synthesize a routable pi-ai model descriptor for a fetched model that the
- * shipped catalog does not yet know. The protocol/endpoint are best-effort
- * defaults; models the shipped catalog already knows are never synthesized.
+ * shipped catalog does not yet know. The protocol/endpoint/reasoning shape
+ * are best-effort defaults mirroring the dominant Go catalog family
+ * (DeepSeek-style openai-completions): the same reasoning levels as
+ * deepseek-v4-pro (off/high/max), so the thinking-strength control behaves
+ * like the shipped models. Models the shipped catalog already knows are
+ * never synthesized.
  * @param {string} id
  * @param {string} [name]
  * @param {string} route - provider route id (e.g. opencode-go).
@@ -117,7 +121,18 @@ export function dynamicModelDescriptor(id, name, route) {
     api: DEFAULT_API,
     baseUrl: DEFAULT_BASE_URL,
     input: ['text'],
-    reasoning: false,
+    // Mirror deepseek-v4-pro: getSupportedThinkingLevels() yields
+    // [off, high, max], and the deepseek thinking format serializes
+    // thinking + reasoning_effort on the wire.
+    reasoning: true,
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', max: 'max' },
+    compat: {
+      supportsStore: false,
+      supportsDeveloperRole: false,
+      maxTokensField: 'max_tokens',
+      requiresReasoningContentOnAssistantMessages: true,
+      thinkingFormat: 'deepseek',
+    },
     contextWindow: DEFAULT_CONTEXT_WINDOW,
     maxTokens: DEFAULT_MAX_TOKENS,
   }

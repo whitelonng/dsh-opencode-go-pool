@@ -88,7 +88,11 @@ test('dynamicModelDescriptor synthesizes a routable openai-completions entry', (
   assert.equal(descriptor.api, 'openai-completions')
   assert.equal(descriptor.baseUrl, 'https://opencode.ai/zen/go/v1')
   assert.deepEqual(descriptor.input, ['text'])
-  assert.equal(descriptor.reasoning, false)
+  // Reasoning mirrors deepseek-v4-pro so the thinking-strength control works.
+  assert.equal(descriptor.reasoning, true)
+  assert.deepEqual(descriptor.thinkingLevelMap, { minimal: null, low: null, medium: null, high: 'high', max: 'max' })
+  assert.equal(descriptor.compat.thinkingFormat, 'deepseek')
+  assert.equal(descriptor.compat.maxTokensField, 'max_tokens')
 })
 
 test('titleCaseId guesses a display name from kebab-case ids', () => {
