@@ -24,9 +24,11 @@
  */
 
 import z from '@deepseek-ai/schemastery'
+import { statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { credentialRef, isCredentialKeySegment, isCredentialRefName } from '@deepseek-ai/dsh-credentials'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import {
   assertUsableApiKey,
@@ -36,7 +38,7 @@ import {
   QUOTA_EXCEEDED_CODE,
   resolveRetryPolicy,
 } from '@deepseek-ai/dsh-llm'
-import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
+import { PiAiAdapter, recordKeyFor } from '@deepseek-ai/dsh-llm-pi-ai'
 import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go'
 import { AUTH_CODE, KeyPool, assertKeyList } from './pool.js'
 import { fetchUsage, UsageCache } from './usage.js'
@@ -49,7 +51,7 @@ import {
 
 export const name = 'opencode-go-pool'
 
-const NS = settingsNamespace('opencode-go-pool')
+const NS = 'opencode-go-pool'
 const DISPLAY_NAME = 'OpenCode Zen Go（池）'
 const DEFAULT_ROUTE = 'opencode-go'
 const ALT_ROUTE = 'opencode-go-pool'
@@ -61,6 +63,12 @@ const DEFAULT_TIMEOUT_MS = 15000
 const USAGE_CACHE_TTL_MS = 15000
 const REVIVE_THRESHOLD_PERCENT = 98
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300000
+// llm-pi-ai reads these three off the resolved profile while it streams, so a
+// profile object assembled outside its config loader has to carry the same
+// defaults that loader applies (config.ts).
+const DEFAULT_MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024
+const DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET = 2048 * 2048
+const DEFAULT_REQUEST_IMAGE_MAX_BYTES = 1024 * 1024
 
 /** The default bounded transient-retry code set, plus quota for pool rotation. */
 const BASE_RETRYABLE_CODES = ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']
@@ -117,13 +125,81 @@ function buildProfile(route, dynamicDescriptors) {
     provider: route,
     displayName: DISPLAY_NAME,
     streamIdleTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+    maxRequestImageBytes: DEFAULT_MAX_REQUEST_IMAGE_BYTES,
+    requestImagePixelBudget: DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET,
+    requestImageMaxBytes: DEFAULT_REQUEST_IMAGE_MAX_BYTES,
     retryPolicy: resolveRetryPolicy(undefined, 'opencode-go-pool.catalog.retryPolicy'),
     piProvider: provider,
     configuredMaxTokens: new Map(),
-    // Newer llm-pi-ai builds read modelCapabilities in listModels; a catalog
-    // route with no configured overrides declares none, so an empty map is
-    // the exact contract (capabilityInfo() returns no claims).
-    modelCapabilities: new Map(),
+    // Per-model diagnostics this route declares none of: the adapter reads
+    // this map on every resolve, so it has to exist.
+    modelErrors: new Map(),
+  }
+}
+
+/**
+ * The `auth` option every PiAiAdapter this plugin builds needs.
+ *
+ * Pool keys never travel through it — each attempt passes its own key as the
+ * request-level override — so the store stays a read-only window on the
+ * harness credential records: a write would create a second place a key can
+ * live, and it fails loud instead. Ambient lookups answer from the credential
+ * seam first, then the process environment, which is where a deployment
+ * exports them.
+ * @param ctx - the plugin context carrying the optional `ctx.credentials`.
+ * @returns the pi-ai auth injection for `createModels()`.
+ */
+function poolAuth(ctx) {
+  const seam = () => ctx.get('credentials')
+  return {
+    credentials: {
+      async read(providerId) {
+        const credentials = seam()
+        if (credentials === undefined || !isCredentialKeySegment(providerId)) return undefined
+        const record = await credentials.readRecord(recordKeyFor(providerId))
+        if (record === undefined) return undefined
+        if (record.kind !== 'api-key') return record.payload
+        return {
+          type: 'api_key',
+          ...record.key === undefined ? {} : { key: record.key },
+          ...record.env === undefined ? {} : { env: { ...record.env } },
+        }
+      },
+      async list() {
+        return []
+      },
+      async modify(providerId) {
+        throw new LlmError(
+          `opencode-go-pool: provider-native sign-in for "${providerId}" is unavailable on the pooled route;`
+          + ' add the key to the pool instead (Settings → OpenCode Go 套餐池), where the pool stores it as a'
+          + ' credential reference',
+          'UNSTORABLE_PROVIDER_ID',
+        )
+      },
+      async delete(providerId) {
+        throw new LlmError(
+          `opencode-go-pool: the pool stores no provider-native credential for "${providerId}"`,
+          'UNSTORABLE_PROVIDER_ID',
+        )
+      },
+    },
+    authContext: {
+      async env(name) {
+        if (isCredentialRefName(name)) {
+          const hit = await seam()?.resolve(credentialRef(name))
+          if (hit !== undefined) return hit.value
+        }
+        return process.env[name]
+      },
+      async fileExists(path) {
+        const target = path.startsWith('~') ? join(homedir(), path.slice(1)) : path
+        try {
+          return statSync(target).isFile()
+        } catch {
+          return false
+        }
+      },
+    },
   }
 }
 
@@ -280,6 +356,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
       validate: validateSection,
     })
     this.current = () => this.scope.get()
+    this.auth = poolAuth(ctx)
 
     this.pool = new KeyPool({
       stateFile: dshHomePath('opencode-go-pool.state.json'),
@@ -324,6 +401,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
       this.profileMap = new Map([[cfg.route, buildProfile(cfg.route, route => this.dynamicModelDescriptors(route))]])
       this.innerCatalog = new PiAiAdapter({
         profiles: () => this.profileMap,
+        auth: this.auth,
         resolveApiKey: async () => {
           throw new Error('opencode-go-pool: the catalog adapter never resolves keys')
         },
@@ -410,6 +488,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
   makeAttemptAdapter(entry) {
     return new PiAiAdapter({
       profiles: () => this.profileMap,
+      auth: this.auth,
       resolveApiKey: () => this.resolveKeyValue(entry),
       resolveAttachments: () => this.ctx.get('attachments'),
     })

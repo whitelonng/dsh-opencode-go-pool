@@ -1,0 +1,17 @@
+# dsh-opencode-go-pool bundle patch.
+#
+# Declaring `dsh.bundle.patch` in package.json lets the official installer mount
+# the plugin in one step: `dsh plugin --profile <name> add <this package>`
+# installs the dependency and appends the bundle to `dsh.profile.bundles`; the
+# profile boot then merges this single insert.
+#
+# No config is set here: the schema defaults are already the documented ones
+# (route `opencode-go`, `preemptAtPercent: 100`, `modelMode: all`). Pool keys are
+# managed from the settings card and live in the settings store, not this file.
+#
+# Takeover: the pool serves the `opencode-go` route, which requires removing the
+# `opencode-go` supplier row from Settings → Models. While another adapter still
+# owns the route the plugin stays dormant and the card shows the takeover hint.
+- insert:
+    - id: opencode-go-pool
+      name: 'dsh-opencode-go-pool'
