@@ -271,18 +271,25 @@ test('the bundle exposes no literal secrets anywhere', async () => {
 })
 
 test('every Remote descriptor carries strict codecs (client binder requirement)', async (t) => {
-  const harness = await loadReact(t)
-  if (!harness) return
   const spec = await loadClientBundle(t)
-  const module = spec.factory(name => (name === 'react' ? harness.React : (() => { throw new Error(name) })()))
+  const ReactStub = {
+    Component: class {},
+    Fragment: {},
+    createElement: () => ({}),
+  }
+  const module = spec.factory(name => (name === 'react' ? ReactStub : (() => { throw new Error(name) })()))
   const { TYPERT_REMOTE } = module.__test
   assert.equal(TYPERT_REMOTE.package, 'dsh-opencode-go-pool')
   assert.ok(TYPERT_REMOTE.descriptors.length >= 6)
   for (const descriptor of TYPERT_REMOTE.descriptors) {
     assert.equal(descriptor.result.mode, 'strict', `${descriptor.method} result must be strict`)
     assert.equal(typeof descriptor.result.schema.parse, 'function')
+    assert.equal(typeof descriptor.result.create, 'function', `${descriptor.method} result needs a create() factory`)
+    assert.strictEqual(descriptor.result.create(), descriptor.result.schema, `${descriptor.method} result create() returns its schema`)
     for (const parameter of descriptor.parameters) {
       assert.equal(parameter.codec.mode, 'strict', `${descriptor.method} parameter ${parameter.name} must be strict`)
+      assert.equal(typeof parameter.codec.create, 'function', `${descriptor.method} parameter ${parameter.name} needs create()`)
+      assert.strictEqual(parameter.codec.create(), parameter.codec.schema, `${descriptor.method} parameter ${parameter.name} create() returns its schema`)
     }
   }
 })
