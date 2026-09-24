@@ -12,7 +12,7 @@ const repoDir = dirname(testDir)
 const pluginEntry = pathToFileURL(join(repoDir, 'index.js')).href
 const loader = pathToFileURL(join(testDir, 'fixtures', 'current-settings-loader.mjs')).href
 
-test('loads when settings has the DSH 0.1.7 export surface', () => {
+test('plugin entry imports without settingsNamespace on the DSH 0.1.7 surface', () => {
   const result = spawnSync(process.execPath, [
     '--no-warnings',
     '--loader', loader,
@@ -22,32 +22,26 @@ test('loads when settings has the DSH 0.1.7 export surface', () => {
   assert.equal(result.status, 0, result.stderr)
 })
 
-test('adapts the current config-editor seam for settings updates', async () => {
+test('adapts the DSH 0.1.7 configEditor seam as a restart-scoped scope', async () => {
   const entry = { id: 'opencode-go-pool' }
-  const current = { route: 'opencode-go', preemptAtPercent: 100 }
+  const current = { route: 'opencode-go', keys: [] }
   const edits = []
-  const listeners = []
   const editor = {
     edit: async (target, change) => {
       assert.equal(target, entry)
       edits.push(change(current, {}))
     },
   }
-  const ctx = {
-    settings: {},
-    fiber: { entry, config: current },
-    configEditor: editor,
-    on: (event, callback) => {
-      listeners.push({ event, callback })
-      return () => {}
-    },
-  }
+  const ctx = { settings: {}, fiber: { config: current } }
 
-  const scope = createSettingsScope(ctx, current)
-  assert.equal(scope.get(), current)
-  scope.watch(() => {})
+  const scope = createSettingsScope(ctx, current, entry, editor)
+  assert.equal(scope.get().route, 'opencode-go')
+  assert.ok(Array.isArray(scope.get().keys))
+  const dispose = scope.watch(() => { throw new Error('unexpected live watch on DSH 0.1.7') })
+  assert.equal(typeof dispose, 'function')
+  dispose()
   await scope.update({ preemptAtPercent: 80 })
-  assert.deepEqual(edits, [{ route: 'opencode-go', preemptAtPercent: 80 }])
+  assert.deepEqual(edits, [{ route: 'opencode-go', keys: [], preemptAtPercent: 80 }])
   await assert.rejects(
     () => scope.update({
       keys: [
@@ -57,7 +51,10 @@ test('adapts the current config-editor seam for settings updates', async () => {
     }),
     /duplicate apiKeyEnv/,
   )
-  assert.equal(listeners[0]?.event, 'internal/update')
+  assert.equal(edits.length, 1, 'a refused write never reaches configEditor.edit')
+  await scope.replace({ route: 'opencode-go-pool', keys: [] })
+  assert.equal(edits.length, 2)
+  assert.deepEqual(edits[1], { route: 'opencode-go-pool', keys: [] })
 })
 
 test('declares the standard DSH bundle patch', async () => {

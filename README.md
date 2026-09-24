@@ -34,21 +34,35 @@ dsh plugin --profile web add github:whitelonng/dsh-opencode-go-pool
 `$DSH_HOME/profiles/web/cordis.patch.yml` 加入插件行：
 
 ```yaml
-- id: opencode-go-pool
-  name: 'dsh-opencode-go-pool'
-  config:
-    route: opencode-go          # 接管官方路由；冲突时休眠等待接管
-    keys: []                    # 初始为空，由卡片管理（也可在此预置）
-    preemptAtPercent: 100       # <100 时，5h 用量达到即主动避让（默认 100：失败才切）
-    switchAfterConsecutiveFailures: 0 # 连续失败后切号；0=关闭
-    modelMode: all              # all=暴露全部官方模型；custom=仅暴露 models 列出的模型
-    models: []                  # modelMode=custom 时的模型 id 列表（也可在卡片内勾选）
-    usageBaseUrl: https://opencode.ai/zen/go/v1/usage
-    usageRefreshMs: 30000
-    timeoutMs: 15000
+- insert:
+    - id: opencode-go-pool
+      name: 'dsh-opencode-go-pool'
+      config:
+        route: opencode-go          # 接管官方路由；冲突时休眠等待接管
+        keys: []                    # 初始为空，由卡片管理（也可在此预置）
+        preemptAtPercent: 100       # <100 时，5h 用量达到即主动避让（默认 100：失败才切）
+        switchAfterConsecutiveFailures: 0 # 连续失败后切号；0=关闭
+        modelMode: all              # all=暴露全部官方模型；custom=仅暴露 models 列出的模型
+        models: []                  # modelMode=custom 时的模型 id 列表（也可在卡片内勾选）
+        usageBaseUrl: https://opencode.ai/zen/go/v1/usage
+        usageRefreshMs: 30000
+        timeoutMs: 15000
 ```
 
-The package now declares a `dsh.bundle.patch`, so the standard `dsh plugin add` command mounts the host and client halves automatically. It supports both DSH settings APIs: the newer `SettingsProvider.register()` seam and the `configEditor` seam used by DSH 0.1.7.
+并在 profile 的 `package.json` 中声明 `dsh-opencode-go-pool` 依赖后重新安装依赖。
+
+## DSH 0.1.7 compatibility
+
+The package declares a `dsh.bundle.patch`, so `dsh plugin add` mounts the host
+and client halves automatically. It supports both DSH settings APIs: the newer
+`SettingsProvider.register()` seam and the `configEditor` seam used by DSH
+0.1.7, where the settings namespace is the loader entry id
+(`opencode-go-pool`).
+
+If you mounted an earlier copy manually under a different row id, delete that
+row before enabling the bundle row. Two rows for this package create a second
+instance and its second `provide('opencodePool')` fails; keep the id
+`opencode-go-pool` when you migrate.
 
 ## 工作原理
 
@@ -121,7 +135,7 @@ Authorization: Bearer <OpenCode Go API Key>
 
 - Host 半：`index.js`（插件 + 池适配器 + 接管）、`pool.js`（状态机）、`usage.js`（用量网关）、`models.js`（模型目录拉取）、`typert.host.js`（RPC 清单）
 - 浏览器半：`client.js`（lazy-CJS bundle，`window.__ModuleLoader__.load` 格式）
-- 测试：`node --test test/*.test.mjs`（38 项：状态机 13、用量网关 7、cordis 烟测 8（接管协议与静默切换端到端）、真实服务集成 5（LlmRuntime 注册表/llm.stream 全链路/settings 写入/接管握手）、客户端 bundle 执行与渲染 5；缺少 harness 依赖时相关测试优雅跳过）
+- 测试：`node --test test/*.test.mjs`（状态机、用量网关、cordis 烟测（接管协议与静默切换端到端）、真实服务集成（LlmRuntime 注册表/llm.stream 全链路/settings 写入/接管握手）、客户端 bundle 执行与渲染、DSH 0.1.7 兼容性；缺少 harness 依赖时相关测试优雅跳过）
 
 ```sh
 node --test test/*.test.mjs
@@ -139,7 +153,7 @@ MIT
 
 ## 验证记录（无 GUI 真实启动）
 
-除 38 项测试外，插件已在真实 DSH host 中完成无 GUI 启动验证（dsh CLI + 一次性测试 profile）：
+除 `node --test test/*.test.mjs` 测试外，插件已在真实 DSH host 中完成无 GUI 启动验证（dsh CLI + 一次性测试 profile）：
 
 ```sh
 DSH_HOME=/tmp/dsh-boot-test/home \

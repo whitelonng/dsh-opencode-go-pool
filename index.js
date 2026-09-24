@@ -75,6 +75,16 @@ const FALLBACK_CONFIG = Object.freeze({
   timeoutMs: DEFAULT_TIMEOUT_MS,
 })
 
+/** Read a plain section from a resolved config, unwrapping per-field volatile refs. */
+function plainConfig(value) {
+  const source = typeof value?.get === 'function' ? value.get() : value
+  if (source === null || typeof source !== 'object' || Array.isArray(source)) return {}
+  return Object.fromEntries(Object.entries(source).map(([key, item]) => [
+    key,
+    typeof item?.get === 'function' ? item.get() : item,
+  ]))
+}
+
 /** The default bounded transient-retry code set, plus quota for pool rotation. */
 const BASE_RETRYABLE_CODES = ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']
 
@@ -104,36 +114,41 @@ export const Config = z.object({
 /**
  * Adapt the settings scope across DSH SDK generations.
  *
- * Newer SDKs expose SettingsProvider.register(). DSH 0.1.7 exposes the
- * config-editor seam instead: every active loader entry with a Config schema
- * is already addressable, so the entry itself is the scope.
+ * Newer SDKs expose SettingsProvider.register(). DSH 0.1.7 has no such method
+ * but does expose the config-editor service, which is read inside an
+ * inject(['configEditor']) callback (direct property access throws without
+ * inject). Either way the scope is restart-scoped: a profile-patch change
+ * reloads the plugin, so there is no live watch to bind here.
  */
-export function createSettingsScope(ctx, initialConfig, entry = ctx.fiber?.entry) {
+export function createSettingsScope(ctx, initialConfig, entry, editor) {
   if (typeof ctx.settings?.register === 'function') {
     return ctx.settings.register(NS, Config, {
       base: initialConfig ?? {},
       validate: validateSection,
     })
   }
-
-  // `ctx.configEditor` is readable only inside an inject(['configEditor'])
-  // callback; the constructor defers this construction there.
-  const editor = ctx.configEditor
-  if (entry === undefined || typeof editor?.edit !== 'function') {
+  const activeEditor = editor ?? ctx.configEditor
+  if (typeof activeEditor?.edit !== 'function') {
     throw new Error('opencode-go-pool: no compatible settings scope is available')
   }
+
+  const activeEntry = entry ?? ctx.fiber?.entry ?? { id: NS, name: 'dsh-opencode-go-pool' }
+  const resolved = () => ({ ...FALLBACK_CONFIG, ...(initialConfig ?? {}), ...plainConfig(ctx.fiber?.config) })
   return {
-    get: () => ctx.fiber?.config ?? initialConfig ?? {},
-    watch: (callback) => ctx.on('internal/update', callback),
+    get: resolved,
+    // DSH 0.1.7 reloads the plugin on a profile-patch change; the scope is
+    // intentionally restart-scoped and owns no live listener.
+    watch: () => () => {},
     update: async (patch) => {
-      await editor.edit(entry, current => {
-        const next = { ...current, ...patch }
+      await activeEditor.edit(activeEntry, current => {
+        const next = { ...plainConfig(current), ...patch }
         validateSection(next)
         return next
       })
     },
     replace: async (section) => {
-      await editor.edit(entry, () => section)
+      validateSection(section)
+      await activeEditor.edit(activeEntry, () => section)
     },
   }
 }
@@ -325,10 +340,10 @@ export class OpenCodeGoPool extends TypertRemoteService {
     this.ctx = ctx
     this.logger = ctx.logger ?? console
 
-    const entry = ctx.fiber?.entry
-    const rawConfig = config ?? {}
+    const rawConfig = plainConfig(config)
     this.scope = null
-    this.current = () => ({ ...FALLBACK_CONFIG, ...rawConfig, ...(this.scope?.get?.() ?? {}) })
+    this.settingsError = null
+    this.current = () => ({ ...FALLBACK_CONFIG, ...rawConfig, ...plainConfig(this.scope?.get?.()) })
 
     this.pool = new KeyPool({
       stateFile: dshHomePath('opencode-go-pool.state.json'),
@@ -354,14 +369,27 @@ export class OpenCodeGoPool extends TypertRemoteService {
 
     this.applyConfig()
 
-    const bindScope = (scopeCtx) => {
-      const scope = createSettingsScope(scopeCtx, rawConfig, entry)
-      this.scope = scope
-      scope.watch(() => this.applyConfig())
-      this.applyConfig()
+    const bindScope = (editor) => {
+      try {
+        const scope = createSettingsScope(ctx, rawConfig, ctx.fiber?.entry, editor)
+        this.scope = scope
+        scope.watch(() => this.applyConfig())
+        this.applyConfig()
+      } catch (error) {
+        this.settingsError = String((error && error.message) || error)
+        this.logger?.warn?.(`[opencode-go-pool] settings unavailable: ${this.settingsError}`)
+      }
     }
-    if (typeof ctx.settings?.register === 'function') bindScope(ctx)
-    else ctx.inject(['configEditor'], bindScope)
+    if (typeof ctx.settings?.register === 'function') {
+      bindScope()
+    } else {
+      try {
+        ctx.inject(['configEditor'], configCtx => bindScope(configCtx.configEditor))
+      } catch (error) {
+        this.settingsError = String((error && error.message) || error)
+        this.logger?.warn?.(`[opencode-go-pool] settings unavailable: ${this.settingsError}`)
+      }
+    }
 
     this.offAdaptersUpdated = ctx.on('llm/adapters-updated', () => {
       if (this.servingRoute === null) this.tryRegister()
@@ -615,6 +643,8 @@ export class OpenCodeGoPool extends TypertRemoteService {
       activeId: this.pool.activeId,
       lastSwitch: this.pool.lastSwitch,
       takeoverHint: this.servingRoute ? null : this.lastTakeoverError,
+      settingsAvailable: this.scope !== null,
+      settingsHint: this.scope !== null ? null : (this.settingsError ?? 'the settings service exposes no writable seam'),
       keys: entries.map(entry => {
         const st = this.pool.stateOf(entry.id)
         const result = usageResults.find(item => item.id === entry.id)
@@ -649,9 +679,16 @@ export class OpenCodeGoPool extends TypertRemoteService {
     return true
   }
 
+  /** The bound settings scope, or a descriptive failure when none is available. */
+  requireScope() {
+    if (this.scope !== null) return this.scope
+    const reason = this.settingsError ?? 'the settings service exposes no writable seam'
+    throw new Error(`opencode-go-pool: settings are unavailable — ${reason}`)
+  }
+
   async putKeys(keys) {
     assertKeyList(keys)
-    await this.scope.update({ keys })
+    await this.requireScope().update({ keys })
     return true
   }
 
@@ -709,7 +746,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
     if (effective.modelMode === 'custom' && (!Array.isArray(effective.models) || effective.models.length === 0)) {
       throw new Error('custom model selection needs at least one model — pick models or use modelMode "all"')
     }
-    await this.scope.update(patch)
+    await this.requireScope().update(patch)
     return true
   }
 

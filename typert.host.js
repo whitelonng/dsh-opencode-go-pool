@@ -80,6 +80,8 @@ const poolStatusSchema = z.object({
   activeId: z.string().nullable(),
   lastSwitch: lastSwitchSchema.nullable(),
   takeoverHint: z.string().nullable(),
+  settingsAvailable: z.boolean(),
+  settingsHint: z.string().nullable(),
   keys: z.array(keyStatusSchema),
 })
 
