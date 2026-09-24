@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { createSettingsScope } from '../index.js'
+import { TYPERT } from '../typert.host.js'
 
 const testDir = dirname(fileURLToPath(import.meta.url))
 const repoDir = dirname(testDir)
@@ -26,15 +27,16 @@ test('adapts the current config-editor seam for settings updates', async () => {
   const current = { route: 'opencode-go', preemptAtPercent: 100 }
   const edits = []
   const listeners = []
+  const editor = {
+    edit: async (target, change) => {
+      assert.equal(target, entry)
+      edits.push(change(current, {}))
+    },
+  }
   const ctx = {
     settings: {},
     fiber: { entry, config: current },
-    configEditor: {
-      edit: async (target, change) => {
-        assert.equal(target, entry)
-        edits.push(change(current, {}))
-      },
-    },
+    configEditor: editor,
     on: (event, callback) => {
       listeners.push({ event, callback })
       return () => {}
@@ -64,4 +66,22 @@ test('declares the standard DSH bundle patch', async () => {
   const patch = await readFile(join(repoDir, 'cordis.patch.yml'), 'utf8')
   assert.match(patch, /id: opencode-go-pool/)
   assert.match(patch, /name: dsh-opencode-go-pool/)
+})
+
+test('ships every invocation codec as strict with a create() factory', () => {
+  assert.ok(TYPERT.invocations.length > 0)
+  for (const invocation of TYPERT.invocations) {
+    const codecs = [
+      ...invocation.parameters.map(parameter => parameter.codec),
+      invocation.result,
+    ]
+    for (const [index, codec] of codecs.entries()) {
+      const where = `${invocation.id} codec #${index}`
+      assert.equal(codec.mode, 'strict', `${where}: mode`)
+      assert.equal(typeof codec.typeSymbol, 'string', `${where}: typeSymbol`)
+      assert.ok(codec.schema, `${where}: schema`)
+      assert.equal(typeof codec.create, 'function', `${where}: create`)
+      assert.strictEqual(codec.create(), codec.schema, `${where}: create() returns the schema`)
+    }
+  }
 })

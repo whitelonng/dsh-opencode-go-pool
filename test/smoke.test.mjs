@@ -151,6 +151,30 @@ test('status() reports the pool without network when keys are empty', async (t) 
   await root.fiber.dispose()
 })
 
+test('mounts with the DSH 0.1.7 configEditor seam and no settings.register', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, OpenCodeGoPool } = harness
+
+  const root = new Context()
+  const llms = makeMockLlms()
+  root.provide('llm', llms)
+  // DSH 0.1.7 exposes the settings service without SettingsProvider.register().
+  root.provide('settings', {})
+  root.provide('configEditor', { edit: async () => {} })
+  root.provide('credentials', { resolve: async () => undefined })
+
+  await root.plugin(OpenCodeGoPool, {})
+  const plugin = root.get('opencodePool')
+  assert.ok(plugin, 'plugin mounts and exposes opencodePool')
+  assert.deepEqual(llms.registered[0], ['opencode-go'])
+
+  const status = await plugin.status()
+  assert.equal(status.takeover, 'serving')
+  assert.equal(status.route, 'opencode-go')
+  await root.fiber.dispose()
+})
+
 test('takeover: dormant while the route is owned elsewhere, auto-registers on adapters-updated', async (t) => {
   const harness = await loadHarness(t)
   if (!harness) return

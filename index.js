@@ -61,6 +61,20 @@ const USAGE_CACHE_TTL_MS = 15000
 const REVIVE_THRESHOLD_PERCENT = 98
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300000
 
+/** Safe configuration used until the injected settings scope is ready. */
+const FALLBACK_CONFIG = Object.freeze({
+  route: DEFAULT_ROUTE,
+  keys: [],
+  preemptAtPercent: 100,
+  switchAfterConsecutiveFailures: 0,
+  modelMode: 'all',
+  models: [],
+  usageBaseUrl: DEFAULT_USAGE_BASE_URL,
+  modelsBaseUrl: DEFAULT_MODELS_BASE_URL,
+  usageRefreshMs: DEFAULT_USAGE_REFRESH_MS,
+  timeoutMs: DEFAULT_TIMEOUT_MS,
+})
+
 /** The default bounded transient-retry code set, plus quota for pool rotation. */
 const BASE_RETRYABLE_CODES = ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']
 
@@ -94,7 +108,7 @@ export const Config = z.object({
  * config-editor seam instead: every active loader entry with a Config schema
  * is already addressable, so the entry itself is the scope.
  */
-export function createSettingsScope(ctx, initialConfig) {
+export function createSettingsScope(ctx, initialConfig, entry = ctx.fiber?.entry) {
   if (typeof ctx.settings?.register === 'function') {
     return ctx.settings.register(NS, Config, {
       base: initialConfig ?? {},
@@ -102,8 +116,9 @@ export function createSettingsScope(ctx, initialConfig) {
     })
   }
 
-  const entry = ctx.fiber?.entry
-  const editor = ctx.configEditor ?? ctx.get?.('configEditor')
+  // `ctx.configEditor` is readable only inside an inject(['configEditor'])
+  // callback; the constructor defers this construction there.
+  const editor = ctx.configEditor
   if (entry === undefined || typeof editor?.edit !== 'function') {
     throw new Error('opencode-go-pool: no compatible settings scope is available')
   }
@@ -310,8 +325,10 @@ export class OpenCodeGoPool extends TypertRemoteService {
     this.ctx = ctx
     this.logger = ctx.logger ?? console
 
-    this.scope = createSettingsScope(ctx, config)
-    this.current = () => this.scope.get()
+    const entry = ctx.fiber?.entry
+    const rawConfig = config ?? {}
+    this.scope = null
+    this.current = () => ({ ...FALLBACK_CONFIG, ...rawConfig, ...(this.scope?.get?.() ?? {}) })
 
     this.pool = new KeyPool({
       stateFile: dshHomePath('opencode-go-pool.state.json'),
@@ -336,7 +353,16 @@ export class OpenCodeGoPool extends TypertRemoteService {
     this.lastModelSelection = null
 
     this.applyConfig()
-    this.scope.watch(() => this.applyConfig())
+
+    const bindScope = (scopeCtx) => {
+      const scope = createSettingsScope(scopeCtx, rawConfig, entry)
+      this.scope = scope
+      scope.watch(() => this.applyConfig())
+      this.applyConfig()
+    }
+    if (typeof ctx.settings?.register === 'function') bindScope(ctx)
+    else ctx.inject(['configEditor'], bindScope)
+
     this.offAdaptersUpdated = ctx.on('llm/adapters-updated', () => {
       if (this.servingRoute === null) this.tryRegister()
     })
