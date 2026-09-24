@@ -26,7 +26,6 @@
 import z from '@deepseek-ai/schemastery'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import {
   assertUsableApiKey,
@@ -49,7 +48,7 @@ import {
 
 export const name = 'opencode-go-pool'
 
-const NS = settingsNamespace('opencode-go-pool')
+const NS = 'opencode-go-pool'
 const DISPLAY_NAME = 'OpenCode Zen Go（池）'
 const DEFAULT_ROUTE = 'opencode-go'
 const ALT_ROUTE = 'opencode-go-pool'
@@ -87,6 +86,42 @@ export const Config = z.object({
   usageRefreshMs: z.number().min(5000).max(300000).default(DEFAULT_USAGE_REFRESH_MS),
   timeoutMs: z.number().min(1000).max(120000).default(DEFAULT_TIMEOUT_MS),
 })
+
+/**
+ * Adapt the settings scope across DSH SDK generations.
+ *
+ * Newer SDKs expose SettingsProvider.register(). DSH 0.1.7 exposes the
+ * config-editor seam instead: every active loader entry with a Config schema
+ * is already addressable, so the entry itself is the scope.
+ */
+export function createSettingsScope(ctx, initialConfig) {
+  if (typeof ctx.settings?.register === 'function') {
+    return ctx.settings.register(NS, Config, {
+      base: initialConfig ?? {},
+      validate: validateSection,
+    })
+  }
+
+  const entry = ctx.fiber?.entry
+  const editor = ctx.configEditor ?? ctx.get?.('configEditor')
+  if (entry === undefined || typeof editor?.edit !== 'function') {
+    throw new Error('opencode-go-pool: no compatible settings scope is available')
+  }
+  return {
+    get: () => ctx.fiber?.config ?? initialConfig ?? {},
+    watch: (callback) => ctx.on('internal/update', callback),
+    update: async (patch) => {
+      await editor.edit(entry, current => {
+        const next = { ...current, ...patch }
+        validateSection(next)
+        return next
+      })
+    },
+    replace: async (section) => {
+      await editor.edit(entry, () => section)
+    },
+  }
+}
 
 /** Cross-field constraints the schema cannot express; refuses the write. */
 function validateSection(value) {
@@ -275,10 +310,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
     this.ctx = ctx
     this.logger = ctx.logger ?? console
 
-    this.scope = ctx.settings.register(NS, Config, {
-      base: config ?? {},
-      validate: validateSection,
-    })
+    this.scope = createSettingsScope(ctx, config)
     this.current = () => this.scope.get()
 
     this.pool = new KeyPool({

@@ -26,6 +26,7 @@
     "models.js",
     "typert.host.js",
     "client.js",
+    "cordis.patch.yml",
     "README.md",
     "LICENSE"
   ],
@@ -36,6 +37,9 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "inject": [
         "@deepseek-ai/dsh-api-remotes",

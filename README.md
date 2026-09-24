@@ -40,6 +40,7 @@ dsh plugin --profile web add github:whitelonng/dsh-opencode-go-pool
     route: opencode-go          # 接管官方路由；冲突时休眠等待接管
     keys: []                    # 初始为空，由卡片管理（也可在此预置）
     preemptAtPercent: 100       # <100 时，5h 用量达到即主动避让（默认 100：失败才切）
+    switchAfterConsecutiveFailures: 0 # 连续失败后切号；0=关闭
     modelMode: all              # all=暴露全部官方模型；custom=仅暴露 models 列出的模型
     models: []                  # modelMode=custom 时的模型 id 列表（也可在卡片内勾选）
     usageBaseUrl: https://opencode.ai/zen/go/v1/usage
@@ -47,7 +48,7 @@ dsh plugin --profile web add github:whitelonng/dsh-opencode-go-pool
     timeoutMs: 15000
 ```
 
-并在 profile 的 `package.json` 中声明依赖后重新安装依赖。
+The package now declares a `dsh.bundle.patch`, so the standard `dsh plugin add` command mounts the host and client halves automatically. It supports both DSH settings APIs: the newer `SettingsProvider.register()` seam and the `configEditor` seam used by DSH 0.1.7.
 
 ## 工作原理
 
@@ -101,6 +102,7 @@ Authorization: Bearer <OpenCode Go API Key>
 | `route` | `opencode-go` | 接管官方路由；改为 `opencode-go-pool` 时注册自有路由（与官方并存，模型选择器需手动切换一次） |
 | `keys` | `[]` | Key 列表：`{id, label, apiKeyEnv}`；通常留空由卡片管理 |
 | `preemptAtPercent` | `100` | 5h 滚动用量达到该百分比即主动避让；100 = 仅在失败时切换 |
+| `switchAfterConsecutiveFailures` | `0` | 连续非配额失败达到该次数后切号；0 = 关闭 |
 | `modelMode` | `all` | `all`=暴露官方目录全部模型（新模型自动可用）；`custom`=仅暴露 `models` 勾选的模型 |
 | `models` | `[]` | `modelMode=custom` 时的模型 id 列表；卡片内「模型选择」勾选后写入 |
 | `usageBaseUrl` | `https://opencode.ai/zen/go/v1/usage` | 用量接口地址 |
