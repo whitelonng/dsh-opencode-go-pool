@@ -151,6 +151,75 @@ test('status() reports the pool without network when keys are empty', async (t) 
   await root.fiber.dispose()
 })
 
+test('mounts with the DSH 0.1.7 configEditor seam and no settings.register', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, OpenCodeGoPool } = harness
+
+  const root = new Context()
+  const llms = makeMockLlms()
+  const edits = []
+  root.provide('llm', llms)
+  // DSH 0.1.7 exposes the settings service without SettingsProvider.register().
+  root.provide('settings', {})
+  root.provide('configEditor', {
+    edit: async (_entry, change) => { edits.push(change({ keys: [] }, {})) },
+  })
+  root.provide('credentials', { resolve: async () => undefined })
+
+  await root.plugin(OpenCodeGoPool, {})
+  const plugin = root.get('opencodePool')
+  assert.ok(plugin, 'plugin mounts and exposes opencodePool')
+  for (let i = 0; i < 10 && plugin.scope === null; i += 1) await new Promise(resolve => setTimeout(resolve, 0))
+  assert.notEqual(plugin.scope, null, 'the configEditor inject callback binds a settings scope')
+  assert.equal(plugin.scope.get().route, 'opencode-go', 'scope reads the plugin fiber config')
+  assert.ok(Array.isArray(plugin.scope.get().keys), 'scope normalizes the config section')
+  const dispose = plugin.scope.watch(() => { throw new Error('unexpected live watch on DSH 0.1.7') })
+  assert.equal(typeof dispose, 'function', 'restart-scoped watch returns a disposer')
+  dispose()
+  await plugin.putKeys([{ id: 'acc-a', label: 'A', apiKeyEnv: 'OPENCODE_GO_KEY_A' }])
+  assert.equal(edits.length, 1, 'putKeys writes through the configEditor seam')
+  assert.equal(edits[0].keys[0].id, 'acc-a')
+  assert.deepEqual(llms.registered[0], ['opencode-go'])
+
+  const status = await plugin.status()
+  assert.equal(status.takeover, 'serving')
+  assert.equal(status.route, 'opencode-go')
+  assert.equal(status.settingsAvailable, true)
+  assert.equal(status.settingsHint, null)
+  await root.fiber.dispose()
+})
+
+test('reports unavailable settings and refuses writes without any settings seam', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { Context, OpenCodeGoPool } = harness
+
+  const root = new Context()
+  const llms = makeMockLlms()
+  root.provide('llm', llms)
+  root.provide('settings', {})
+  root.provide('credentials', { resolve: async () => undefined })
+
+  await root.plugin(OpenCodeGoPool, {})
+  const plugin = root.get('opencodePool')
+  assert.ok(plugin, 'plugin still mounts without a settings seam')
+  assert.equal(plugin.scope, null, 'no scope is bound when settings exposes no seam')
+
+  const status = await plugin.status()
+  assert.equal(status.settingsAvailable, false)
+  assert.match(status.settingsHint, /settings/i)
+  await assert.rejects(
+    () => plugin.putKeys([{ id: 'acc-a', label: 'A', apiKeyEnv: 'OPENCODE_GO_KEY_A' }]),
+    /settings are unavailable/i,
+  )
+  await assert.rejects(
+    () => plugin.putConfig({ preemptAtPercent: 80 }),
+    /settings are unavailable/i,
+  )
+  await root.fiber.dispose()
+})
+
 test('takeover: dormant while the route is owned elsewhere, auto-registers on adapters-updated', async (t) => {
   const harness = await loadHarness(t)
   if (!harness) return

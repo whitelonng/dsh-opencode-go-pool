@@ -8,6 +8,11 @@
 // whole plugin activation). Every result below is therefore a zod v4 schema;
 // the business payload (status) is strict-validated before it crosses the
 // wire, and the simple mutation results ride as strict booleans/strings.
+//
+// DSH 0.1.7 additionally requires a create() factory on every strict codec
+// (each parameter and each result) and decodes at the wire boundary via
+// codec.create().parse(value); the factory returns the schema itself and is
+// cached, so it may be called repeatedly.
 
 import { z } from 'zod'
 
@@ -75,6 +80,8 @@ const poolStatusSchema = z.object({
   activeId: z.string().nullable(),
   lastSwitch: lastSwitchSchema.nullable(),
   takeoverHint: z.string().nullable(),
+  settingsAvailable: z.boolean(),
+  settingsHint: z.string().nullable(),
   keys: z.array(keyStatusSchema),
 })
 
@@ -84,7 +91,7 @@ const keyInputSchema = z.object({
   apiKeyEnv: z.string(),
 })
 
-const strict = (typeSymbol, schema) => ({ mode: 'strict', typeSymbol, schema })
+const strict = (typeSymbol, schema) => ({ mode: 'strict', typeSymbol, schema, create: () => schema })
 
 const invocation = (method, parameters, result) => ({
   id: `dsh-opencode-go-pool#opencodePool/${method}`,

@@ -1,0 +1,13 @@
+- insert:
+    - id: opencode-go-pool
+      name: dsh-opencode-go-pool
+      config:
+        route: opencode-go
+        keys: []
+        preemptAtPercent: 100
+        switchAfterConsecutiveFailures: 0
+        modelMode: all
+        models: []
+        usageBaseUrl: https://opencode.ai/zen/go/v1/usage
+        usageRefreshMs: 30000
+        timeoutMs: 15000

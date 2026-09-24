@@ -29,6 +29,7 @@ window.__ModuleLoader__.load({
       takeoverOwnRoute: '自有路由模式 · opencode-go-pool',
       takeoverWaiting: '等待接管',
       takeoverWaitingHint: 'opencode-go 路由当前由其他插件持有。请在「设置 → 模型」中删除 opencode-go 供应商行，本插件会自动接管，历史会话无需任何改动。',
+      settingsUnavailable: '当前 DSH 运行时不提供可写的设置接口',
       noKeysTitle: '尚未配置 Key',
       noKeysHint: '每个 Key 对应一个 OpenCode Go 账号。在下方「Key 管理」中添加，Key 值请通过凭据填写（设置 → 模型 的凭据页，或 ~/.dsh/.credentials.yaml / 环境变量）。',
       activeBadge: '使用中',
@@ -123,6 +124,7 @@ window.__ModuleLoader__.load({
       takeoverOwnRoute: 'Own route mode · opencode-go-pool',
       takeoverWaiting: 'Waiting for takeover',
       takeoverWaitingHint: 'The opencode-go route is currently owned by another plugin. Remove the opencode-go row under Settings → Models and this plugin takes over automatically — existing conversations keep working unchanged.',
+      settingsUnavailable: 'This DSH runtime exposes no writable settings seam',
       noKeysTitle: 'No keys configured',
       noKeysHint: 'Each key is one OpenCode Go account. Add keys under “Key management” below; paste the literal key into the credentials page (Settings → Models, or ~/.dsh/.credentials.yaml / environment variables).',
       activeBadge: 'in use',
@@ -224,16 +226,19 @@ window.__ModuleLoader__.load({
     // before they cross the wire; this side only needs the descriptor shapes
     // to mount and call.
     const passthrough = () => ({ parse(value) { return value; } });
-    // NOTE: every result codec must be strict — the generated client Remote
-    // binder rejects src-json results at mount time ("has no strict codec").
-    const strict = () => ({ mode: 'strict', typeSymbol: 'json', schema: passthrough() });
+    // NOTE: every codec must be strict and carry a create() factory — the
+    // generated client typert registry rejects strict descriptors without it.
+    const strict = () => {
+      const schema = passthrough();
+      return { mode: 'strict', typeSymbol: 'json', schema, create: () => schema };
+    };
     const DESCRIPTOR = (method, parameters) => ({
       id: `dsh-opencode-go-pool#opencodePool/${method}`,
       service: 'opencodePool',
       namespace: 'opencodePool',
       method,
       invocation: { kind: 'direct' },
-      parameters: parameters.map(p => ({ name: p, wire: p, source: 'json', codec: { mode: 'strict', typeSymbol: 'json', schema: passthrough() } })),
+      parameters: parameters.map(p => ({ name: p, wire: p, source: 'json', codec: strict() })),
       result: strict(),
     });
 
@@ -876,6 +881,14 @@ window.__ModuleLoader__.load({
                 ? React.createElement('p', { style: styles.error }, t('noKeysHint'))
                 : null,
             ),
+            data.settingsAvailable === false
+              ? React.createElement('div', { style: { ...styles.banner, ...styles.bannerWarn } },
+                  React.createElement('p', { style: { margin: 0, fontWeight: 600 } }, t('settingsUnavailable')),
+                  data.settingsHint
+                    ? React.createElement('p', { style: styles.hint }, data.settingsHint)
+                    : null,
+                )
+              : null,
             React.createElement(ModelCard, {
               t, data, sel: modelSel, setSel: setModelSel, busy,
               onFetchModels, fetching,
