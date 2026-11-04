@@ -84,7 +84,9 @@ const keyInputSchema = z.object({
   apiKeyEnv: z.string(),
 })
 
-const strict = (typeSymbol, schema) => ({ mode: 'strict', typeSymbol, schema })
+// A strict codec carries a `create()` factory for its schema; the typert
+// loader rejects a codec without one (0.2 requirement) before dispatch.
+const strict = (typeSymbol, schema) => ({ mode: 'strict', typeSymbol, create: () => schema, schema })
 
 const invocation = (method, parameters, result) => ({
   id: `dsh-opencode-go-pool#opencodePool/${method}`,

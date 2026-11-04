@@ -23,10 +23,12 @@
  * @module dsh-opencode-go-pool
  */
 
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+
 import z from '@deepseek-ai/schemastery'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import {
   assertUsableApiKey,
@@ -34,6 +36,7 @@ import {
   LlmAdapter,
   LlmError,
   QUOTA_EXCEEDED_CODE,
+  resolveImageAttachmentAccess,
   resolveRetryPolicy,
 } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
@@ -49,7 +52,6 @@ import {
 
 export const name = 'opencode-go-pool'
 
-const NS = settingsNamespace('opencode-go-pool')
 const DISPLAY_NAME = 'OpenCode Zen Go（池）'
 const DEFAULT_ROUTE = 'opencode-go'
 const ALT_ROUTE = 'opencode-go-pool'
@@ -61,6 +63,42 @@ const DEFAULT_TIMEOUT_MS = 15000
 const USAGE_CACHE_TTL_MS = 15000
 const REVIVE_THRESHOLD_PERCENT = 98
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300000
+
+/**
+ * Card-owned state file. The Loader row config stays the base layer (it seeds
+ * the pool and still describes the deployment), while everything the settings
+ * card writes lives here: DSH 0.2 owns profile config documents itself and no
+ * longer hands a plugin a per-namespace settings scope, so a plugin that wants
+ * runtime-managed keys persists them beside its own runtime state.
+ */
+const CARD_FILE = 'opencode-go-pool.card.json'
+const CARD_FIELDS = ['keys', 'preemptAtPercent', 'switchAfterConsecutiveFailures', 'modelMode', 'models']
+
+/** Read the card-owned override file; a missing or broken file is an empty layer. */
+function loadCardState() {
+  try {
+    const parsed = JSON.parse(readFileSync(dshHomePath(CARD_FILE), 'utf8'))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const state = {}
+    for (const field of CARD_FIELDS) if (parsed[field] !== undefined) state[field] = parsed[field]
+    return state
+  } catch {
+    return {}
+  }
+}
+
+/** Persist the card-owned overrides atomically; a read-only home only costs persistence. */
+function saveCardState(state) {
+  try {
+    const path = dshHomePath(CARD_FILE)
+    const temporary = `${path}.tmp`
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
+    renameSync(temporary, path)
+  } catch {
+    // Runtime state keeps working; only durability of card edits is lost.
+  }
+}
 
 /** The default bounded transient-retry code set, plus quota for pool rotation. */
 const BASE_RETRYABLE_CODES = ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']
@@ -119,11 +157,18 @@ function buildProfile(route, dynamicDescriptors) {
     streamIdleTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
     retryPolicy: resolveRetryPolicy(undefined, 'opencode-go-pool.catalog.retryPolicy'),
     piProvider: provider,
+    // llm-pi-ai 1.x reads these profile fields unconditionally on the metadata
+    // and request paths: per-model configuration failures (empty = none) and
+    // the image projection budgets shared with the catalog default route.
+    modelErrors: new Map(),
     configuredMaxTokens: new Map(),
     // Newer llm-pi-ai builds read modelCapabilities in listModels; a catalog
     // route with no configured overrides declares none, so an empty map is
     // the exact contract (capabilityInfo() returns no claims).
     modelCapabilities: new Map(),
+    requestImagePixelBudget: 4194304,
+    requestImageMaxBytes: 1048576,
+    maxRequestImageBytes: 20971520,
   }
 }
 
@@ -267,7 +312,7 @@ class OpenCodeGoPoolAdapter extends LlmAdapter {
  * and dispatch the `opencodePool` invocations declared in typert.host.js.
  */
 export class OpenCodeGoPool extends TypertRemoteService {
-  static inject = ['llm', 'credentials', 'settings']
+  static inject = ['llm', 'credentials']
   static Config = Config
 
   constructor(ctx, config) {
@@ -275,11 +320,11 @@ export class OpenCodeGoPool extends TypertRemoteService {
     this.ctx = ctx
     this.logger = ctx.logger ?? console
 
-    this.scope = ctx.settings.register(NS, Config, {
-      base: config ?? {},
-      validate: validateSection,
-    })
-    this.current = () => this.scope.get()
+    // Two layers: the Loader row config (validated by `Config`, the base) and
+    // the card-owned overrides this plugin persists itself.
+    this.baseConfig = { ...(config ?? {}) }
+    this.card = loadCardState()
+    this.current = () => this.effectiveConfig()
 
     this.pool = new KeyPool({
       stateFile: dshHomePath('opencode-go-pool.state.json'),
@@ -304,7 +349,6 @@ export class OpenCodeGoPool extends TypertRemoteService {
     this.lastModelSelection = null
 
     this.applyConfig()
-    this.scope.watch(() => this.applyConfig())
     this.offAdaptersUpdated = ctx.on('llm/adapters-updated', () => {
       if (this.servingRoute === null) this.tryRegister()
     })
@@ -312,6 +356,26 @@ export class OpenCodeGoPool extends TypertRemoteService {
   }
 
   // ---- configuration & registration ---------------------------------------
+
+  /** Loader config plus card overrides, with the key list validated before use. */
+  effectiveConfig() {
+    const merged = { ...this.baseConfig, ...this.card }
+    let keys = Array.isArray(merged.keys) ? merged.keys : []
+    try {
+      assertKeyList(keys)
+    } catch (error) {
+      this.logger?.warn?.(`[opencode-go-pool] ignoring an invalid key list: ${String((error && error.message) || error)}`)
+      keys = Array.isArray(this.baseConfig.keys) ? this.baseConfig.keys : []
+    }
+    return { ...merged, keys }
+  }
+
+  /** Merge a card-owned patch, persist it, and re-apply the live configuration. */
+  writeCard(patch) {
+    this.card = { ...this.card, ...patch }
+    saveCardState(this.card)
+    this.applyConfig()
+  }
 
   applyConfig() {
     const cfg = this.current()
@@ -324,10 +388,13 @@ export class OpenCodeGoPool extends TypertRemoteService {
       this.profileMap = new Map([[cfg.route, buildProfile(cfg.route, route => this.dynamicModelDescriptors(route))]])
       this.innerCatalog = new PiAiAdapter({
         profiles: () => this.profileMap,
-        resolveApiKey: async () => {
-          throw new Error('opencode-go-pool: the catalog adapter never resolves keys')
-        },
+        // Catalog metadata needs no credential: answering with none keeps
+        // listModels/resolveModel working while the pool holds every key.
+        resolveApiKey: async () => undefined,
+        auth: this.piAuth(),
         resolveAttachments: () => this.ctx.get('attachments'),
+        resolveImageAccess: (attachments, ref) => this.resolveImageAccess(attachments, ref),
+        onReplayDegrade: () => {},
       })
     }
     if (!this.poolAdapter) this.poolAdapter = new OpenCodeGoPoolAdapter(this)
@@ -406,12 +473,58 @@ export class OpenCodeGoPool extends TypertRemoteService {
 
   // ---- credentials & adapters ----------------------------------------------
 
+  /**
+   * llm-pi-ai 1.x resolves authentication through a pi-ai auth seam: a
+   * credential store plus an auth context. Every request this plugin makes
+   * carries the pool key explicitly, so the store stays empty and only the
+   * context answers — for credential references, never for ambient env.
+   */
+  piAuth() {
+    if (this.auth !== undefined) return this.auth
+    const ctx = this.ctx
+    this.auth = {
+      credentials: {
+        async read() { return undefined },
+        async list() { return [] },
+        async modify() { return undefined },
+        async delete() {},
+      },
+      authContext: {
+        async env(name) {
+          try {
+            const hit = await ctx.get('credentials')?.resolve(credentialRef(name))
+            if (hit !== undefined && hit.value.length > 0) return hit.value
+          } catch {
+            // A name outside the credential-ref grammar is not ours to resolve.
+          }
+          return undefined
+        },
+        async fileExists() { return false },
+      },
+    }
+    return this.auth
+  }
+
+  /** Project one request image through the harness attachment/fs seams. */
+  resolveImageAccess(attachments, ref) {
+    return resolveImageAttachmentAccess(
+      attachments,
+      hostPath => this.ctx.get('fs')?.processPathFromHostPath(hostPath),
+      ref,
+    )
+  }
+
   /** Per-attempt adapter bound to one key: no cross-attempt key races. */
   makeAttemptAdapter(entry) {
     return new PiAiAdapter({
       profiles: () => this.profileMap,
       resolveApiKey: () => this.resolveKeyValue(entry),
+      auth: this.piAuth(),
       resolveAttachments: () => this.ctx.get('attachments'),
+      resolveImageAccess: (attachments, ref) => this.resolveImageAccess(attachments, ref),
+      onReplayDegrade: ({ provider, model, reason }) => {
+        this.logger?.warn?.(`[opencode-go-pool] unusable replay state for "${provider}/${model}"; sending that message as provider-neutral content (${reason})`)
+      },
     })
   }
 
@@ -593,7 +706,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
 
   async putKeys(keys) {
     assertKeyList(keys)
-    await this.scope.update({ keys })
+    this.writeCard({ keys })
     return true
   }
 
@@ -651,7 +764,7 @@ export class OpenCodeGoPool extends TypertRemoteService {
     if (effective.modelMode === 'custom' && (!Array.isArray(effective.models) || effective.models.length === 0)) {
       throw new Error('custom model selection needs at least one model — pick models or use modelMode "all"')
     }
-    await this.scope.update(patch)
+    this.writeCard(patch)
     return true
   }
 

@@ -1,0 +1,27 @@
+# Bundle patch for dsh-opencode-go-pool.
+#
+# Inserts the plugin row into the root composition. `Config` in index.js
+# validates this block; the settings card owns everything after the first run
+# through $DSH_HOME/opencode-go-pool.card.json (keys, thresholds, model
+# selection), so editing this file is only needed to change the base layer.
+- insert:
+    - id: opencode-go-pool
+      name: 'dsh-opencode-go-pool'
+      config:
+        # The provider route this plugin serves. `opencode-go` is the official
+        # catalog route; the plugin sleeps until whoever owns it releases it.
+        route: opencode-go
+        # Seed keys only. An OpenCode Go account per entry; `apiKeyEnv` names a
+        # credential reference, never the secret itself.
+        keys:
+          - id: main
+            label: 主号
+            apiKeyEnv: ARK_API_KEY
+        preemptAtPercent: 100
+        switchAfterConsecutiveFailures: 0
+        modelMode: all
+        models: []
+        usageBaseUrl: https://opencode.ai/zen/go/v1/usage
+        modelsBaseUrl: https://opencode.ai/zen/go/v1/models
+        usageRefreshMs: 30000
+        timeoutMs: 15000

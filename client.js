@@ -224,16 +224,16 @@ window.__ModuleLoader__.load({
     // before they cross the wire; this side only needs the descriptor shapes
     // to mount and call.
     const passthrough = () => ({ parse(value) { return value; } });
-    // NOTE: every result codec must be strict — the generated client Remote
-    // binder rejects src-json results at mount time ("has no strict codec").
-    const strict = () => ({ mode: 'strict', typeSymbol: 'json', schema: passthrough() });
+    // NOTE: every codec must be strict and carry a `create()` schema factory —
+    // the client Remote binder validates both when it mounts a contribution.
+    const strict = () => ({ mode: 'strict', typeSymbol: 'json', create: passthrough, schema: passthrough() });
     const DESCRIPTOR = (method, parameters) => ({
       id: `dsh-opencode-go-pool#opencodePool/${method}`,
       service: 'opencodePool',
       namespace: 'opencodePool',
       method,
       invocation: { kind: 'direct' },
-      parameters: parameters.map(p => ({ name: p, wire: p, source: 'json', codec: { mode: 'strict', typeSymbol: 'json', schema: passthrough() } })),
+      parameters: parameters.map(p => ({ name: p, wire: p, source: 'json', codec: strict() })),
       result: strict(),
     });
 

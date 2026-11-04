@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="OpenCode Go pool">
+  <title>OpenCode Go pool</title>
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="none" stroke="#247bbf" stroke-width="1.5" opacity="0.35"/>
+  <path d="M 12.2 9.4 A 5.4 5.4 0 1 1 10.6 18.4" fill="none" stroke="#247bbf" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M 12.6 15.4 H 9.6" fill="none" stroke="#247bbf" stroke-width="1.8" stroke-linecap="round"/>
+  <circle cx="21.4" cy="15.4" r="5.2" fill="none" stroke="#247bbf" stroke-width="1.8" opacity="0.75"/>
+  <circle cx="24.6" cy="11.2" r="1.5" fill="#247bbf"/>
+</svg>
