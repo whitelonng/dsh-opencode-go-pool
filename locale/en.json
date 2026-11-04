@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "OpenCode Go Pool",
+    "description": "Pools several OpenCode Go keys behind one provider route, fails over silently when a key runs out of quota, and shows 5h/weekly/monthly usage in Settings."
+  }
+}

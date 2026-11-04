@@ -17,6 +17,29 @@ DeepSeek Harness（DSH）插件：**OpenCode Go 套餐的多 Key 池** —— �
 | 🗂 模型选择 | 卡片内勾选该路由暴露哪些模型：「全部模型」跟随官方目录；自定义时未勾选的模型不出现在聊天模型下拉、也无法发起请求；默认折叠，点「展开」查看 |
 | 📥 拉取最新模型 | 卡片内「拉取模型」从官方 `models` 接口抓取供应商最新模型列表；目录里还没有的新模型即时进入可选列表（按默认协议接入，勾选即可尝试） |
 
+## DSH 0.2 适配（本 fork）
+
+本 fork 把上游 `whitelonng/dsh-opencode-go-pool@0.1.10` 移植到 DeepSeek Harness **0.2.x**（本机验证版本 `0.2.1-rc.5`，pi-ai `1.1.0`，Cordis `4.0.5`）。与原版的差异只有「接缝」部分，池状态机、用量网关、模型目录、UI 全部沿用：
+
+| 接缝 | 0.1 原版 | 0.2 适配 |
+|---|---|---|
+| llm-pi-ai 适配器 | `new PiAiAdapter({ profiles, resolveApiKey, resolveAttachments })` | 补上 1.x 必需的 `auth`（`credentials` + `authContext` seam）、`resolveImageAccess`、`onReplayDegrade`；profile 增补 `modelErrors` 与图片预算字段 |
+| Typert 编解码 | `codec: { mode, typeSymbol, schema }` | 0.2 的校验器要求 `create()` 工厂，Host 清单与 Client contribution 两侧都改为 `{ mode, typeSymbol, create: () => schema }` |
+| 设置存储 | `ctx.settings.register(NS, Config, …)` + `settingsNamespace()` | 0.2 不再向插件暴露命名空间 scope：卡片写入落到 `$DSH_HOME/opencode-go-pool.card.json`，Loader 行配置保留为 base 层（首次运行由它播种 Key） |
+| 模型目录 | pi-ai 0.82 描述符 | pi-ai 1.1 的 `opencodeGoProvider()`；「拉取模型」得到的动态模型仍经 `getModels()` 合并进目录 |
+| 运行时状态 | `$DSH_HOME/opencode-go-pool.state.json` | 不变 |
+| 路由接管 | 占用 `opencode-go` 时休眠、`llm/adapters-updated` 后重试 | 不变 |
+
+已在真实 Host 环境验证：`llm.stream` 全链路出字（`glm-5.3` / `deepseek-v4-pro`）、坏 Key → 好 Key 的静默切换（`lastSwitch.reason: invalid`，对话零感知）、用量接口 5h/周/月三窗口、Client contribution 挂载与 `settings.section` 注册（GUI 侧边栏出现「OpenCode Go 套餐池」）。
+
+安装（本地目录即 bundle，带 `cordis.patch.yml`）：
+
+```sh
+dsh plugin --profile desktop add D:\sources\pub-repo\dsh-opencode-go-pool
+```
+
+或在 GUI 的插件管理器里安装该目录 —— 安装即插入 `opencode-go-pool` 行，无需手改 yml。
+
 ## 安装
 
 ```sh
@@ -119,7 +142,7 @@ Authorization: Bearer <OpenCode Go API Key>
 
 - Host 半：`index.js`（插件 + 池适配器 + 接管）、`pool.js`（状态机）、`usage.js`（用量网关）、`models.js`（模型目录拉取）、`typert.host.js`（RPC 清单）
 - 浏览器半：`client.js`（lazy-CJS bundle，`window.__ModuleLoader__.load` 格式）
-- 测试：`node --test test/*.test.mjs`（38 项：状态机 13、用量网关 7、cordis 烟测 8（接管协议与静默切换端到端）、真实服务集成 5（LlmRuntime 注册表/llm.stream 全链路/settings 写入/接管握手）、客户端 bundle 执行与渲染 5；缺少 harness 依赖时相关测试优雅跳过）
+- 测试：`node --test test/*.test.mjs`（状态机 / 用量网关 / 模型目录 / 客户端 bundle / Typert 清单；缺少 harness 依赖时相关测试优雅跳过）。上游那两份直接构造 0.1 Host 接缝的套件保留为 `test/legacy-0.1-*.mjs`，仅作参考、不参与 `npm test`；0.2 的真实 Host 验证见 `.dev/` 下的冒烟脚本（`smoke.mjs`、`failover.mjs`、`client.mjs`）。
 
 ```sh
 node --test test/*.test.mjs
